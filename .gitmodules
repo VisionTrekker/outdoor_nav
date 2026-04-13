@@ -1,0 +1,12 @@
+[submodule "src/driver/livox_ros_driver2"]
+	path = src/driver/livox_ros_driver2
+	url = git@github.com:VisionTrekker/livox_ros_driver2.git
+	branch = main
+[submodule "src/navigation2/spatio_temporal_voxel_layer"]
+	path = src/navigation2/spatio_temporal_voxel_layer
+	url = git@github.com:VisionTrekker/spatio_temporal_voxel_layer.git
+	branch = humble
+[submodule "src/slam/FAST_LIO"]
+	path = src/slam/FAST_LIO
+	url = git@github.com:VisionTrekker/FAST_LIO.git
+	branch = ROS2
