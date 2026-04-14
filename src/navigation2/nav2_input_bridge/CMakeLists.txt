@@ -13,6 +13,7 @@ find_package(sensor_msgs REQUIRED)
 find_package(tf2 REQUIRED)
 find_package(tf2_ros REQUIRED)
 find_package(tf2_geometry_msgs REQUIRED)
+find_package(std_msgs REQUIRED)
 
 add_executable(input_bridge_node
   src/main.cpp
@@ -24,6 +25,7 @@ ament_target_dependencies(input_bridge_node
   nav_msgs
   rclcpp
   sensor_msgs
+  std_msgs
   tf2
   tf2_ros
   tf2_geometry_msgs
@@ -52,6 +54,7 @@ ament_export_dependencies(
   nav_msgs
   rclcpp
   sensor_msgs
+  std_msgs
   tf2
   tf2_ros
   tf2_geometry_msgs

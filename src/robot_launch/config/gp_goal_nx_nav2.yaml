@@ -145,6 +145,8 @@ nav2_input_bridge:
     #reference_longitude: 120.8104288
     #reference_altitude: 12.07629405266946
     goal_input_topic: "/gp_goal"
+    uav_goal_input_topic: "/uav/target_gps"
+    target_detected_topic: "/target_detected"
     goal_output_topic: "/goal_pose"
     goal_output_frame: "map"
     require_nav_sat_fix: true

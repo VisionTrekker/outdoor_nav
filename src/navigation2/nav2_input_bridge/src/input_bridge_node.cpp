@@ -15,6 +15,8 @@ InputBridgeNode::InputBridgeNode(const rclcpp::NodeOptions & options)
 {
   local_odom_topic_ = declare_parameter("local_odom_topic", std::string("/mavros/local_position/odom"));
   goal_input_topic_ = declare_parameter("goal_input_topic", std::string("/gp_goal"));
+  uav_goal_input_topic_ = declare_parameter("uav_goal_input_topic", std::string("/uav/target_gps"));
+  target_detected_topic_ = declare_parameter("target_detected_topic", std::string("/target_detected"));
   goal_output_topic_ = declare_parameter("goal_output_topic", std::string("/goal_pose"));
   goal_output_frame_ = declare_parameter("goal_output_frame", std::string("map"));
   require_goal_fix_ = declare_parameter("require_nav_sat_fix", true);
@@ -56,6 +58,14 @@ InputBridgeNode::InputBridgeNode(const rclcpp::NodeOptions & options)
     goal_input_topic_, goal_qos,
     std::bind(&InputBridgeNode::onGoalFix, this, std::placeholders::_1));
 
+  uav_goal_sub_ = create_subscription<sensor_msgs::msg::NavSatFix>(
+    uav_goal_input_topic_, goal_qos,
+    std::bind(&InputBridgeNode::onUavGoalFix, this, std::placeholders::_1));
+
+  target_detected_sub_ = create_subscription<std_msgs::msg::Bool>(
+    target_detected_topic_, 10,
+    std::bind(&InputBridgeNode::onTargetDetected, this, std::placeholders::_1));
+
   goal_pub_ = create_publisher<geometry_msgs::msg::PoseStamped>(goal_output_topic_, 10);
 }
 
@@ -77,6 +87,12 @@ void InputBridgeNode::onOdom(const nav_msgs::msg::Odometry::SharedPtr msg)
   t.transform.translation.z = 0.0;
   t.transform.rotation = msg->pose.pose.orientation;
   tf_broadcaster_->sendTransform(t);
+
+  {
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    latest_odom_ = *msg;
+    have_odom_ = true;
+  }
 }
 
 void InputBridgeNode::llaToEnu(
@@ -127,11 +143,27 @@ void InputBridgeNode::llaToEnu(
 //   *up_m    = alt_m - alt0_m;
 // }
 
-void InputBridgeNode::onGoalFix(const sensor_msgs::msg::NavSatFix::SharedPtr msg)
+// 发布目标位置（GPS 坐标投影转换到 局部ENU坐标）
+void InputBridgeNode::processGoalFix(
+  const sensor_msgs::msg::NavSatFix::SharedPtr msg,
+  const std::string & source)
 {
+  {
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    if (target_detected_) {
+      RCLCPP_WARN_THROTTLE(
+        get_logger(), *get_clock(), 3000,
+        "Target already detected, ignoring new %s goal", source.c_str());
+      return;
+    }
+  }
+
   if (require_goal_fix_ &&
     msg->status.status == sensor_msgs::msg::NavSatStatus::STATUS_NO_FIX)
   {
+    RCLCPP_WARN_THROTTLE(
+      get_logger(), *get_clock(), 3000,
+      "%s goal has no GPS fix", source.c_str());
     return;
   }
 
@@ -175,6 +207,71 @@ void InputBridgeNode::onGoalFix(const sensor_msgs::msg::NavSatFix::SharedPtr msg
   }
 
   goal_pub_->publish(out);
+  RCLCPP_INFO(
+    get_logger(),
+    "[%s] Goal published: E=%.2f m, N=%.2f m, U=%.2f m",
+    source.c_str(), east, north, up);
+}
+
+void InputBridgeNode::onGoalFix(const sensor_msgs::msg::NavSatFix::SharedPtr msg)
+{
+  processGoalFix(msg, "manual");
+}
+
+void InputBridgeNode::onUavGoalFix(const sensor_msgs::msg::NavSatFix::SharedPtr msg)
+{
+  processGoalFix(msg, "uav");
+}
+
+// 发布停止目标位置
+void InputBridgeNode::publishStopGoal()
+{
+  nav_msgs::msg::Odometry odom;
+  bool have = false;
+  {
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    odom = latest_odom_;
+    have = have_odom_;
+  }
+
+  if (!have) {
+    RCLCPP_WARN(
+      get_logger(),
+      "Target detected but no odometry available yet, cannot publish stop goal");
+    return;
+  }
+
+  geometry_msgs::msg::PoseStamped out;
+  out.header.stamp = now();
+  out.header.frame_id = goal_output_frame_;
+  out.pose.position.x = odom.pose.pose.position.x;
+  out.pose.position.y = odom.pose.pose.position.y;
+  out.pose.position.z = 0.0;
+  out.pose.orientation = odom.pose.pose.orientation;
+
+  goal_pub_->publish(out);
+  RCLCPP_INFO(
+    get_logger(),
+    "[yolo] Target detected! Stop goal published at current pose: x=%.2f, y=%.2f",
+    out.pose.position.x, out.pose.position.y);
+}
+
+// 处理目标检测信号
+void InputBridgeNode::onTargetDetected(const std_msgs::msg::Bool::SharedPtr msg)
+{
+  if (!msg->data) {
+    return;
+  }
+
+  {
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    if (target_detected_) {
+      return;
+    }
+    target_detected_ = true;
+  }
+
+  publishStopGoal();
 }
 
 }  // namespace nav2_input_bridge

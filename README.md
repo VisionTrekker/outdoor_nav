@@ -3,6 +3,23 @@
 outdoor 导航项目，基于 ROS 2 构建，融合激光雷达感知、SLAM 与 Nav2 导航框架。
 该项目运行在 NVIDIA Orin NX 开发板上。
 
+项目需求：
+无人机获取目标人物的位置后，将其GPS坐标发送给地面端小车。小车根据自身GPS坐标和目标GPS坐标，进行导航避障。
+暂时为减少开发GPS和IMU融合算法的工作量，现使用PX4融合定位来获取小车状态。
+
+采用的架构 —— 全局无图路点导航 + 局部动态避障：
+小车接收到无人机发送的目标 GPS 后，做局部坐标投影变换，计算其在局部坐标系的位置，然后导航避障
+1. 确立局部坐标“原点”
+   - 小车上电并在室外获得稳定 GPS 信号（3D fix）后，Pixhawk 的 EKF2 算法会初始化。它会把小车当前所在位置的 GPS 坐标锁定为 全局坐标原点`gp_origin`（经纬度）和 局部坐标系原点 (0, 0, 0)
+   - 局部坐标系：
+     - 原点：GPS 信号（3D fix）后的位置（订阅 /mavros/global_position/gp_origin）
+     - 方向：固定的 ENU （东北天坐标系 X-东，Y-北，Z-天）
+2. 接收无人机目标点：ROS2 节点通过电台接收无人机发来目标点GPS坐标；
+3. 坐标投影转换 (核心步骤，把基于 WGS84 的经纬度直接投影到以原点为中心的平面坐标)：使用PX4-Autopolit中的墨卡托矩形投影（PX4-Autopilot/src/lib/geo/geo.cpp）
+4. 执行导航与避障（系统里所有数据都统一到了米制单位）：
+   - 小车当前状态（位姿 + 速度）： 来自 /mavros/local_position/odom
+   - 目标点的局部位置
+
 ## 项目结构
 
 ```
@@ -124,8 +141,8 @@ bash launch.sh
 - **设置局部坐标原点**（需与 `src/robot_launch/config/gp_goal_nx_nav2.yaml` 中的参考坐标一致）
 
   ```bash
-  ros2 topic pub --once /mavros/global_position/set_gp_origin \
-    geographic_msgs/msg/GeoPointStamped "{header: {frame_id: 'map'}, position: {latitude: 30.8135718, longitude: 120.8338169, altitude: 12.318126322268082}}"
+  ros2 topic pub --once /mavros/global_position/set_gp_origin geographic_msgs/msg/GeoPointStamped \
+    "{header: {frame_id: 'map'}, position: {latitude: 30.8135718, longitude: 120.8338169, altitude: 12.318126322268082}}"
   ```
 
   对应的配置参数：
