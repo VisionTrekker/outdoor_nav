@@ -1,6 +1,7 @@
 # outdoor_nav
 
- outdoor 导航项目，基于 ROS 2 构建，融合激光雷达感知、SLAM 与 Nav2 导航框架。
+outdoor 导航项目，基于 ROS 2 构建，融合激光雷达感知、SLAM 与 Nav2 导航框架。
+该项目运行在 NVIDIA Orin NX 开发板上。
 
 ## 项目结构
 
@@ -25,12 +26,14 @@ outdoor_nav/
 ## 环境要求
 
 - **操作系统**：Ubuntu 22.04
-- **ROS 发行版**：ROS 2 Humble Hawksbill
+- **ROS 发行版**：ROS 2 Humble
 - **编译工具**：`colcon`、`CMake >= 3.16`
 
 ### 安装 ROS 2 Humble
 
 参考官方文档：[https://docs.ros.org/en/humble/Installation.html](https://docs.ros.org/en/humble/Installation.html)
+
+一键安装命令： `source <(wget -qO- http://fishros.com/install)`
 
 安装后记得 source 环境：
 
@@ -72,11 +75,7 @@ rosdep install --from-paths src --ignore-src -r -y
 ./build.sh
 ```
 
-该脚本等价于：
-
-```bash
-colcon build --symlink-install --cmake-args -DBUILD_TESTING=OFF
-```
+> 等价于：`colcon build --symlink-install --cmake-args -DBUILD_TESTING=OFF`
 
 编译完成后，source 本地工作空间：
 
@@ -87,36 +86,95 @@ source install/setup.bash
 建议将 source 命令添加到 `~/.bashrc` 中：
 
 ```bash
-echo "source /media/lenovo/disk/KT5/outdoor_nav/install/setup.bash" >> ~/.bashrc
+echo "source [path_to_outdoor_nav]/install/setup.bash" >> ~/.bashrc
 ```
 
-## 运行
+## 实机测试流程
 
-### 1. 启动建图（FAST_LIO + Livox）
+按以下顺序依次启动（每步建议新开终端）：
+
+### 1. 重启小车
+
+### 2. 启动小车运控
+
+```bash
+bash launch_car.sh
+```
+
+> 等价于 `ros2 launch ros2can car_driver.launch.py`
+
+### 3. 启动 PX4 融合定位
+
+```bash
+bash launch_loc.sh
+```
+
+> 等价于 `ros2 launch mavros px4.launch fcu_url:="/dev/ttyACM0:230400"`
+
+### 4. 启动导航
+
+```bash
+bash launch.sh
+```
+
+> 等价于 `ros2 launch robot_launch gp_goal_nx_nav2.launch.py`
+
+### 5. 设置局部坐标原点并下发目标点
+
+- **设置局部坐标原点**（需与 `src/robot_launch/config/gp_goal_nx_nav2.yaml` 中的参考坐标一致）
+
+  ```bash
+  ros2 topic pub --once /mavros/global_position/set_gp_origin \
+    geographic_msgs/msg/GeoPointStamped "{header: {frame_id: 'map'}, position: {latitude: 30.8135718, longitude: 120.8338169, altitude: 12.318126322268082}}"
+  ```
+
+  对应的配置参数：
+
+  ```yaml
+  nav2_input_bridge:
+    ros__parameters:
+      use_sim_time: false
+      local_odom_topic: "/mavros/local_position/odom"
+      reference_latitude: 30.8135718
+      reference_longitude: 120.8338169
+      reference_altitude: 12.318126322268082
+      goal_input_topic: "/gp_goal"
+      goal_output_topic: "/goal_pose"
+      goal_output_frame: "map"
+      require_nav_sat_fix: true
+      goal_yaw_from_bearing: false
+  ```
+
+- **验证原点设置成功**
+
+  ```bash
+  ros2 topic echo /mavros/global_position/gp_origin
+  ```
+
+- **下发 GPS 目标点**
+
+  ```bash
+  ros2 topic pub --once /gp_goal sensor_msgs/msg/NavSatFix \
+    "{header: {frame_id: 'gps'}, latitude: 30.8135718, longitude: 120.8338169, altitude: 12.318126322268082}"
+  ```
+
+## 模块调试（开发场景）
+
+实机流程已经封装了最常用的启动脚本，如需单独调试某个模块，可直接使用：
+
+### 建图（FAST_LIO + Livox）
 
 ```bash
 ros2 launch robot_launch nav2.launch.py
 ```
 
-或根据实际场景选择对应的 launch 文件：
-
-```bash
-ros2 launch robot_launch gp_goal_nx_nav2.launch.py
-```
-
-### 2. 启动 CAN 驱动
-
-```bash
-ros2 launch ros2can car_driver.launch.py
-```
-
-### 3. 单独启动导航
+### 单独启动导航（不带 GPS 目标输入）
 
 ```bash
 ros2 launch robot_launch nx_nav2.launch.py
 ```
 
-> 具体 launch 文件及参数含义请参考 `src/robot_launch/launch/` 目录下的源码与配置。
+> 更多 launch 文件及参数请参考 `src/robot_launch/launch/` 目录。
 
 ## 常见问题
 
@@ -131,11 +189,3 @@ ros2 launch robot_launch nx_nav2.launch.py
      ```bash
      sudo apt install libopenvdb-dev
      ```
-
-## 贡献
-
-欢迎提交 Issue 和 Pull Request。
-
-## 许可证
-
-各子模块遵循其原始仓库的许可证，其余代码按项目实际情况声明。
