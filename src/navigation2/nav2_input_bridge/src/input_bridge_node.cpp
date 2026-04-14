@@ -100,48 +100,33 @@ void InputBridgeNode::llaToEnu(
   double lat0_deg, double lon0_deg, double alt0_m,
   double * east_m, double * north_m, double * up_m) const
 {
+  // Spherical tangent-plane projection (same algorithm used in PX4 MapProjection)
+  const double R = WGS84_R_;
   const double lat_r = lat_deg * M_PI / 180.0;
   const double lon_r = lon_deg * M_PI / 180.0;
   const double lat0_r = lat0_deg * M_PI / 180.0;
   const double lon0_r = lon0_deg * M_PI / 180.0;
-  const double dlat = lat_r - lat0_r;
+  const double sin_lat = sin(lat_r);
+  const double cos_lat = cos(lat_r);
+  const double sin_lat0 = sin(lat0_r);
+  const double cos_lat0 = cos(lat0_r);
   const double dlon = lon_r - lon0_r;
-  *north_m = WGS84_R_ * dlat;
-  *east_m = WGS84_R_ * dlon * std::cos(lat0_r);
-  *up_m = alt_m - alt0_m;
+  const double cos_dlon = cos(dlon);
+
+  double arg = sin_lat0 * sin_lat + cos_lat0 * cos_lat * cos_dlon;
+  arg = std::min(1.0, std::max(-1.0, arg));
+  const double c = acos(arg);
+  double k = 1.0;
+  if (fabs(c) > 1e-6) {
+    k = c / sin(c);
+  }
+  const double north = k * (cos_lat0 * sin_lat - sin_lat0 * cos_lat * cos_dlon) * R;
+  const double east  = k * cos_lat * sin(dlon) * R;
+
+  *east_m  = east;
+  *north_m = north;
+  *up_m    = alt_m - alt0_m;
 }
-
-// void InputBridgeNode::llaToEnu(
-//   double lat_deg, double lon_deg, double alt_m,
-//   double lat0_deg, double lon0_deg, double alt0_m,
-//   double * east_m, double * north_m, double * up_m) const
-// {
-//   const double R = WGS84_R_;
-//   const double lat = lat_deg * M_PI / 180.0;
-//   const double lon = lon_deg * M_PI / 180.0;
-//   const double lat0 = lat0_deg * M_PI / 180.0;
-//   const double lon0 = lon0_deg * M_PI / 180.0;
-//   const double sin_lat = sin(lat);
-//   const double cos_lat = cos(lat);
-//   const double sin_lat0 = sin(lat0);
-//   const double cos_lat0 = cos(lat0);
-//   const double dlon = lon - lon0;
-//   const double cos_dlon = cos(dlon);
-
-//   double arg = sin_lat0 * sin_lat + cos_lat0 * cos_lat * cos_dlon;
-//   arg = std::min(1.0, std::max(-1.0, arg));
-//   const double c = acos(arg);
-//   double k = 1.0;
-//   if (fabs(c) > 1e-6) {
-//     k = c / sin(c);
-//   }
-//   const double north = k * (cos_lat0 * sin_lat - sin_lat0 * cos_lat * cos_dlon) * R;
-//   const double east  = k * cos_lat * sin(dlon) * R;
-
-//   *east_m  = east;
-//   *north_m = north;
-//   *up_m    = alt_m - alt0_m;
-// }
 
 // 发布目标位置（GPS 坐标投影转换到 局部ENU坐标）
 void InputBridgeNode::processGoalFix(

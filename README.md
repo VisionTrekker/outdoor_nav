@@ -15,7 +15,7 @@ outdoor 导航项目，基于 ROS 2 构建，融合激光雷达感知、SLAM 与
      - 原点：GPS 信号（3D fix）后的位置（订阅 /mavros/global_position/gp_origin）
      - 方向：固定的 ENU （东北天坐标系 X-东，Y-北，Z-天）
 2. 接收无人机目标点：ROS2 节点通过电台接收无人机发来目标点GPS坐标；
-3. 坐标投影转换 (核心步骤，把基于 WGS84 的经纬度直接投影到以原点为中心的平面坐标)：使用PX4-Autopolit中的墨卡托矩形投影（PX4-Autopilot/src/lib/geo/geo.cpp）
+3. 坐标投影转换 (核心步骤，把基于 WGS84 的经纬度直接投影到以原点为中心的平面坐标)：使用PX4-Autopolit中的球面局部切平面投影（PX4-Autopilot/src/lib/geo/geo.cpp）
 4. 执行导航与避障（系统里所有数据都统一到了米制单位）：
    - 小车当前状态（位姿 + 速度）： 来自 /mavros/local_position/odom
    - 目标点的局部位置
