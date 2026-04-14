@@ -221,3 +221,9 @@ ros2 launch robot_launch nx_nav2.launch.py
      ```bash
      sudo apt install libopenvdb-dev
      ```
+
+4. **YOLO 触发后小车会停在哪里？会不会掉头回来？**
+   - 从 YOLO 检测到目标 → 发布 stop goal，端到端延迟约 **150-250 ms**（含图像推理、ROS2 传输、Nav2 控制周期、CAN 响应）。
+   - 按当前线速度(`FollowPath/desired_linear_vel`) **0.5 m/s** 估算，惯性滑行约 **0.1-0.15 m**。
+   - Nav2 的 `general_goal_checker/xy_goal_tolerance` 为 **0.25 m**，因此滑行距离通常落在容忍范围内，**不会触发掉头返回**，仅会原地减速停车。
+   - 若未来提高车速或地面极滑导致滑行超过 0.25 m，可能出现倒车修正，届时可引入“提前制动距离”或“检测框相对位姿”优化。
