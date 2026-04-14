@@ -1,24 +1,37 @@
 # outdoor_nav
 
-outdoor 导航项目，基于 ROS 2 构建，融合激光雷达感知、SLAM 与 Nav2 导航框架。
-该项目运行在 NVIDIA Orin NX 开发板上。
+outdoor 导航项目，基于 ROS 2 构建，融合激光雷达感知、SLAM 与 Nav2 导航框架，运行在 NVIDIA Orin NX 开发板上。
 
-项目需求：
-无人机获取目标人物的位置后，将其GPS坐标发送给地面端小车。小车根据自身GPS坐标和目标GPS坐标，进行导航避障。
-暂时为减少开发GPS和IMU融合算法的工作量，现使用PX4融合定位来获取小车状态。
+## 系统架构与运行逻辑
 
-采用的架构 —— 全局无图路点导航 + 局部动态避障：
-小车接收到无人机发送的目标 GPS 后，做局部坐标投影变换，计算其在局部坐标系的位置，然后导航避障
-1. 确立局部坐标“原点”
-   - 小车上电并在室外获得稳定 GPS 信号（3D fix）后，Pixhawk 的 EKF2 算法会初始化。它会把小车当前所在位置的 GPS 坐标锁定为 全局坐标原点`gp_origin`（经纬度）和 局部坐标系原点 (0, 0, 0)
-   - 局部坐标系：
-     - 原点：GPS 信号（3D fix）后的位置（订阅 /mavros/global_position/gp_origin）
-     - 方向：固定的 ENU （东北天坐标系 X-东，Y-北，Z-天）
-2. 接收无人机目标点：ROS2 节点通过电台接收无人机发来目标点GPS坐标；
-3. 坐标投影转换 (核心步骤，把基于 WGS84 的经纬度直接投影到以原点为中心的平面坐标)：使用PX4-Autopolit中的球面局部切平面投影（PX4-Autopilot/src/lib/geo/geo.cpp）
-4. 执行导航与避障（系统里所有数据都统一到了米制单位）：
-   - 小车当前状态（位姿 + 速度）： 来自 /mavros/local_position/odom
-   - 目标点的局部位置
+**目标**：无人机获取目标人物的 GPS 坐标后发送给地面端小车，小车根据自身 GPS 位置和目标 GPS 位置进行全局无图路点导航 + 局部动态避障。
+
+为减少 GPS/IMU 融合算法的开发量，小车状态（位姿 + 速度）直接采用 **PX4 EKF2 融合定位**（`/mavros/local_position/odom`）。
+
+### 坐标系统
+
+1. **局部坐标原点**：小车上电并在室外获得稳定 GPS 信号（3D fix）后，Pixhawk EKF2 将当前位置锁定为全局原点 `gp_origin`（经纬度），对应局部坐标系原点 `(0, 0, 0)`
+   - 方向：固定 ENU（X-东，Y-北，Z-天）
+2. **坐标投影**：`nav2_input_bridge` 使用 **PX4 球面局部切平面投影**（`PX4-Autopilot/src/lib/geo/geo.cpp`），把 WGS84 经纬度投影到以原点为中心的米制平面坐标
+
+### 目标输入
+
+`nav2_input_bridge` 同时接收两类 GPS 目标点：
+
+- **`/gp_goal`**：手动测试/地面站注入（`sensor_msgs/NavSatFix`）
+- **`/uav/target_gps`**：无人机通过电台发来的目标坐标
+
+节点将目标坐标转换为局部 ENU 后发布到 `/goal_pose`，Nav2 控制器执行路径跟踪与避障。
+
+### YOLO 停止机制
+
+当同机运行的 YOLO 检测到目标人物时，发布 **`/target_detected`**（`std_msgs/Bool`，`data=true`）。
+
+`nav2_input_bridge` 收到后：
+1. **立即发布当前小车位置**作为新的 `goal_pose`，让 Nav2 就地停止
+2. **置位 `target_detected` 标志**，此后**忽略所有新的 GPS 目标点**（无论来自 `/gp_goal` 还是 `/uav/target_gps`）
+
+> 如需重新启动任务，必须重启导航 launch。
 
 ## 项目结构
 
@@ -156,6 +169,8 @@ bash launch.sh
       reference_longitude: 120.8338169
       reference_altitude: 12.318126322268082
       goal_input_topic: "/gp_goal"
+      uav_goal_input_topic: "/uav/target_gps"
+      target_detected_topic: "/target_detected"
       goal_output_topic: "/goal_pose"
       goal_output_frame: "map"
       require_nav_sat_fix: true
