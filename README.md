@@ -133,6 +133,12 @@ echo "source [path_to_outdoor_nav]/install/setup.bash" >> ~/.bashrc
 bash launch_all.sh
 ```
 
+*(可选)* 如需手动设置原点（如在室内测试无GPS信号，不想由于超时等待报错），可增加 `use_auto_origin` 参数禁用自动设置脚本：
+
+```bash
+bash launch_all.sh use_auto_origin:=false
+```
+
 > 该脚本会自动 source ROS 2 环境和本地 install，然后启动 `outdoor_all.launch.py`。
 
 该 launch 会依次启动：
@@ -141,7 +147,7 @@ bash launch_all.sh
 3. 导航栈（`gp_goal_nx_nav2.launch.py`，含 Livox 驱动、Nav2 控制器、局部避障等）
 4. **自动设置局部坐标原点**：启动 10 秒后自动发布 `set_gp_origin`，并订阅反馈验证；若失败会自动重试（最多 3 次）
 
-启动后观察终端日志，当看到 `gp_origin verified successfully` 时，系统已就绪。
+启动后观察终端日志，当看到 `gp_origin verified successfully` 时，系统已就绪（若已禁用自动原点设置，则待系统稳定后可通过命令行或地面站手动注入原点）。
 
 ### 下发目标点
 

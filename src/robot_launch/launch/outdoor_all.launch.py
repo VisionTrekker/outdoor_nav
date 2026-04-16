@@ -5,6 +5,7 @@ import os
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
+from launch.conditions import IfCondition
 from launch.launch_description_sources import AnyLaunchDescriptionSource, PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
@@ -28,6 +29,11 @@ def generate_launch_description():
         default_value="12.318126322268082",
         description="ENU origin altitude for auto gp_origin set.",
     )
+    declare_use_auto_origin = DeclareLaunchArgument(
+        "use_auto_origin",
+        default_value="true",
+        description="Whether to run the auto_set_gp_origin script on startup.",
+    )
     declare_fcu_url = DeclareLaunchArgument(
         "fcu_url",
         default_value="/dev/ttyACM0:230400",
@@ -38,6 +44,7 @@ def generate_launch_description():
     ref_lon = LaunchConfiguration("reference_longitude")
     ref_alt = LaunchConfiguration("reference_altitude")
     fcu_url = LaunchConfiguration("fcu_url")
+    use_auto_origin = LaunchConfiguration("use_auto_origin")
 
     car_driver_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
@@ -72,6 +79,7 @@ def generate_launch_description():
                 "verify_timeout_s": 5.0,
             }
         ],
+        condition=IfCondition(use_auto_origin),
     )
 
     return LaunchDescription(
@@ -79,6 +87,7 @@ def generate_launch_description():
             declare_ref_lat,
             declare_ref_lon,
             declare_ref_alt,
+            declare_use_auto_origin,
             declare_fcu_url,
             car_driver_launch,
             mavros_launch,
