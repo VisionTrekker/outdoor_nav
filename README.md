@@ -121,74 +121,89 @@ echo "source [path_to_outdoor_nav]/install/setup.bash" >> ~/.bashrc
 
 ## 实机测试流程
 
-按以下顺序依次启动（每步建议新开终端）：
-
 ### 1. 重启小车
 
-### 2. 启动小车运控
+> 每次实机测试前建议先重启小车。因为小车与遥控器建立通信后，可能会导致 NVIDIA Orin NX 板的控制断连，重启可恢复稳定的控制链路。
+
+### 2. 一键启动全车系统
+
+编译完成后，在项目根目录下直接运行：
 
 ```bash
+bash launch_all.sh
+```
+
+> 该脚本会自动 source ROS 2 环境和本地 install，然后启动 `outdoor_all.launch.py`。
+
+该 launch 会依次启动：
+1. 小车运控（`ros2can car_driver.launch.py`）
+2. PX4 融合定位（`mavros px4.launch`）
+3. 导航栈（`gp_goal_nx_nav2.launch.py`，含 Livox 驱动、Nav2 控制器、局部避障等）
+4. **自动设置局部坐标原点**：启动 10 秒后自动发布 `set_gp_origin`，并订阅反馈验证；若失败会自动重试（最多 3 次）
+
+启动后观察终端日志，当看到 `gp_origin verified successfully` 时，系统已就绪。
+
+### 下发目标点
+
+系统就绪后，在**另一个终端**下发 GPS 目标点：
+
+```bash
+# 手动测试
+ros2 topic pub --once /gp_goal sensor_msgs/msg/NavSatFix \
+  "{header: {frame_id: 'gps'}, latitude: 30.8135718, longitude: 120.8338169, altitude: 12.318126322268082}"
+
+# 或模拟无人机链路
+ros2 topic pub --once /uav/target_gps sensor_msgs/msg/NavSatFix \
+  "{header: {frame_id: 'gps'}, latitude: 30.8135718, longitude: 120.8338169, altitude: 12.318126322268082}"
+```
+
+### 手动测试 YOLO 停止机制
+
+在小车行驶过程中，可通过以下命令模拟 YOLO 检测到目标，触发立即停车并忽略后续新目标点：
+
+```bash
+ros2 topic pub --once /target_detected std_msgs/msg/Bool "{data: true}"
+```
+
+> 触发后如需重新接受目标点，必须重启导航 launch。
+
+若需单独观察原点反馈：
+
+```bash
+ros2 topic echo /mavros/global_position/gp_origin
+```
+
+原点设置参数位于 `src/robot_launch/config/gp_goal_nx_nav2.yaml`：
+
+```yaml
+nav2_input_bridge:
+  ros__parameters:
+    reference_latitude: 30.8135718
+    reference_longitude: 120.8338169
+    reference_altitude: 12.318126322268082
+    goal_input_topic: "/gp_goal"
+    uav_goal_input_topic: "/uav/target_gps"
+    target_detected_topic: "/target_detected"
+    goal_output_topic: "/goal_pose"
+    goal_output_frame: "map"
+```
+
+### 备选：分步手动启动
+
+若某模块需要单独调试，仍可分别启动：
+
+```bash
+# 终端 1：小车运控
 bash launch_car.sh
-```
 
-> 等价于 `ros2 launch ros2can car_driver.launch.py`
-
-### 3. 启动 PX4 融合定位
-
-```bash
+# 终端 2：PX4 融合定位
 bash launch_loc.sh
-```
 
-> 等价于 `ros2 launch mavros px4.launch fcu_url:="/dev/ttyACM0:230400"`
-
-### 4. 启动导航
-
-```bash
+# 终端 3：导航
 bash launch.sh
 ```
 
-> 等价于 `ros2 launch robot_launch gp_goal_nx_nav2.launch.py`
 
-### 5. 设置局部坐标原点并下发目标点
-
-- **设置局部坐标原点**（需与 `src/robot_launch/config/gp_goal_nx_nav2.yaml` 中的参考坐标一致）
-
-  ```bash
-  ros2 topic pub --once /mavros/global_position/set_gp_origin geographic_msgs/msg/GeoPointStamped \
-    "{header: {frame_id: 'map'}, position: {latitude: 30.8135718, longitude: 120.8338169, altitude: 12.318126322268082}}"
-  ```
-
-  对应的配置参数：
-
-  ```yaml
-  nav2_input_bridge:
-    ros__parameters:
-      use_sim_time: false
-      local_odom_topic: "/mavros/local_position/odom"
-      reference_latitude: 30.8135718
-      reference_longitude: 120.8338169
-      reference_altitude: 12.318126322268082
-      goal_input_topic: "/gp_goal"
-      uav_goal_input_topic: "/uav/target_gps"
-      target_detected_topic: "/target_detected"
-      goal_output_topic: "/goal_pose"
-      goal_output_frame: "map"
-      require_nav_sat_fix: true
-      goal_yaw_from_bearing: false
-  ```
-
-- **验证原点设置成功**
-
-  ```bash
-  ros2 topic echo /mavros/global_position/gp_origin
-  ```
-
-- **下发 GPS 目标点**
-
-  ```bash
-  ros2 topic pub --once /gp_goal sensor_msgs/msg/NavSatFix \
-    "{header: {frame_id: 'gps'}, latitude: 30.8135718, longitude: 120.8338169, altitude: 12.318126322268082}"
-  ```
 
 ## 模块调试（开发场景）
 
