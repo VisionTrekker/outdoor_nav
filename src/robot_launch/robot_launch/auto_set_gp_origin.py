@@ -8,7 +8,6 @@ import rclpy
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 from geographic_msgs.msg import GeoPointStamped
-from sensor_msgs.msg import NavSatFix
 
 class AutoSetGpOrigin(Node):
     def __init__(self):
@@ -28,7 +27,7 @@ class AutoSetGpOrigin(Node):
 
         self.pub = self.create_publisher(GeoPointStamped, "/mavros/global_position/set_gp_origin", 10)
         self.sub = self.create_subscription(
-            NavSatFix, "/mavros/global_position/gp_origin", self.on_gp_origin, qos_profile_sensor_data
+            GeoPointStamped, "/mavros/global_position/gp_origin", self.on_gp_origin, qos_profile_sensor_data
         )
 
         self.verified = False
@@ -80,25 +79,34 @@ class AutoSetGpOrigin(Node):
         self.get_logger().warn(f"Verify timeout on attempt {self.retry_count}, retrying...")
         self.publish_gp_origin()
 
-    def on_gp_origin(self, msg: NavSatFix):
+    def on_gp_origin(self, msg: GeoPointStamped):
         if self.verified:
             return
-        if math.isnan(msg.latitude) or math.isnan(msg.longitude) or math.isnan(msg.altitude):
+        lat = msg.position.latitude
+        lon = msg.position.longitude
+        alt = msg.position.altitude
+        
+        if math.isnan(lat) or math.isnan(lon) or math.isnan(alt):
             return
         if (
-            abs(msg.latitude - self.lat) < self.tolerance_deg
-            and abs(msg.longitude - self.lon) < self.tolerance_deg
-            and abs(msg.altitude - self.alt) < 1.0
+            abs(lat - self.lat) < self.tolerance_deg
+            and abs(lon - self.lon) < self.tolerance_deg
+            and abs(alt - self.alt) < 1.0
         ):
             self.verified = True
             if self.verify_timer is not None:
                 self.verify_timer.cancel()
-            self.get_logger().info("gp_origin verified successfully")
+            self.get_logger().info(
+                f"gp_origin verified successfully! "
+                f"Target: [{self.lat:.8f}, {self.lon:.8f}, {self.alt:.3f}] | "
+                f"Received: [{lat:.8f}, {lon:.8f}, {alt:.3f}]"
+            )
             self.schedule_shutdown(1.0)
         else:
             self.get_logger().warn(
-                f"gp_origin mismatch: received lat={msg.latitude:.8f}, lon={msg.longitude:.8f}, "
-                f"alt={msg.altitude:.3f}"
+                f"gp_origin mismatch! "
+                f"Target: [{self.lat:.8f}, {self.lon:.8f}, {self.alt:.3f}] | "
+                f"Received: [{lat:.8f}, {lon:.8f}, {alt:.3f}]"
             )
 
     def schedule_shutdown(self, delay_s: float):
