@@ -103,6 +103,7 @@ void InputBridgeNode::llaToEnu(
   double * east_m, double * north_m, double * up_m) const
 {
   // Spherical tangent-plane projection (same algorithm used in PX4 MapProjection)
+  // For 5km+ scenarios, switch to the ellipsoid algorithm (see commented block below)
   const double R = WGS84_R_;
   const double lat_r = lat_deg * M_PI / 180.0;
   const double lon_r = lon_deg * M_PI / 180.0;
@@ -128,6 +129,58 @@ void InputBridgeNode::llaToEnu(
   *east_m  = east;
   *north_m = north;
   *up_m    = alt_m - alt0_m;
+
+#if 0
+  // =============================================================================
+  // Ellipsoid projection (WGS84) — for scenarios beyond 5km range
+  //
+  // Replaces the spherical approximation above. The ellipsoid model eliminates
+  // the ~0.1-0.3% spherical error (e.g., ~15m at 5km).
+  //
+  // WGS84 ellipsoid parameters
+  // const double a = 6378137.0;                // Semi-major axis (m)
+  // const double f = 1.0 / 298.257223563;    // Flattening
+  // const double e2 = f * (2.0 - f);         // First eccentricity squared
+  //
+  // Convert geodetic (lat, lon, alt) to ECEF (X, Y, Z)
+  // auto lla_to_ecef = [&](double lat, double lon, double alt,
+  //                        double & X, double & Y, double & Z) {
+  //   const double phi = lat * M_PI / 180.0;
+  //   const double lam = lon * M_PI / 180.0;
+  //   const double sin_phi = sin(phi);
+  //   const double cos_phi = cos(phi);
+  //   const double sin_lam = sin(lam);
+  //   const double cos_lam = cos(lam);
+  //   const double N = a / sqrt(1.0 - e2 * sin_phi * sin_phi);
+  //   X = (N + alt) * cos_phi * cos_lam;
+  //   Y = (N + alt) * cos_phi * sin_lam;
+  //   Z = (N * (1.0 - e2) + alt) * sin_phi;
+  // };
+  //
+  // double X, Y, Z;
+  // double X0, Y0, Z0;
+  // lla_to_ecef(lat_deg, lon_deg, alt_m, X, Y, Z);
+  // lla_to_ecef(lat0_deg, lon0_deg, alt0_m, X0, Y0, Z0);
+  //
+  // ECEF delta
+  // const double dx = X - X0;
+  // const double dy = Y - Y0;
+  // const double dz = Z - Z0;
+  //
+  // Rotate ECEF delta to ENU using origin's geodetic position
+  // const double phi0 = lat0_deg * M_PI / 180.0;
+  // const double lam0 = lon0_deg * M_PI / 180.0;
+  // const double sin_phi0 = sin(phi0);
+  // const double cos_phi0 = cos(phi0);
+  // const double sin_lam0 = sin(lam0);
+  // const double cos_lam0 = cos(lam0);
+  //
+  // ENU rotation matrix (applied to ECEF delta vector)
+  // *east_m  = -sin_lam0 * dx           + cos_lam0 * dy;
+  // *north_m = -sin_phi0 * cos_lam0 * dx - sin_phi0 * sin_lam0 * dy + cos_phi0 * dz;
+  // *up_m    =  cos_phi0 * cos_lam0 * dx + cos_phi0 * sin_lam0 * dy + sin_phi0 * dz;
+  // =============================================================================
+#endif
 }
 
 // 发布目标位置（GPS 坐标投影转换到 局部ENU坐标）
