@@ -3,6 +3,7 @@
 #include "nav2_input_bridge/input_bridge_node.hpp"
 
 #include <cmath>
+#include <algorithm>
 
 #include "tf2/LinearMath/Quaternion.h"
 #include "tf2_geometry_msgs/tf2_geometry_msgs.hpp"
@@ -21,6 +22,7 @@ InputBridgeNode::InputBridgeNode(const rclcpp::NodeOptions & options)
   goal_output_frame_ = declare_parameter("goal_output_frame", std::string("map"));
   require_goal_fix_ = declare_parameter("require_nav_sat_fix", true);
   goal_yaw_from_bearing_ = declare_parameter("goal_yaw_from_bearing", false);
+  follow_path_action_topic_ = declare_parameter("follow_path_action_topic", std::string("/follow_path"));
 
   const double ref_lat = declare_parameter("reference_latitude", 0.0);
   const double ref_lon = declare_parameter("reference_longitude", 0.0);
@@ -67,6 +69,12 @@ InputBridgeNode::InputBridgeNode(const rclcpp::NodeOptions & options)
     std::bind(&InputBridgeNode::onTargetDetected, this, std::placeholders::_1));
 
   goal_pub_ = create_publisher<geometry_msgs::msg::PoseStamped>(goal_output_topic_, 10);
+
+  stop_planner_pub_ = create_publisher<std_msgs::msg::Bool>("stop_planner", 10);
+
+  follow_path_action_client_ = rclcpp_action::create_client<FollowPath>(
+    this,
+    follow_path_action_topic_);
 }
 
 void InputBridgeNode::onOdom(const nav_msgs::msg::Odometry::SharedPtr msg)
@@ -87,12 +95,6 @@ void InputBridgeNode::onOdom(const nav_msgs::msg::Odometry::SharedPtr msg)
   t.transform.translation.z = 0.0;
   t.transform.rotation = msg->pose.pose.orientation;
   tf_broadcaster_->sendTransform(t);
-
-  {
-    std::lock_guard<std::mutex> lock(state_mutex_);
-    latest_odom_ = *msg;
-    have_odom_ = true;
-  }
 }
 
 void InputBridgeNode::llaToEnu(
@@ -133,16 +135,6 @@ void InputBridgeNode::processGoalFix(
   const sensor_msgs::msg::NavSatFix::SharedPtr msg,
   const std::string & source)
 {
-  {
-    std::lock_guard<std::mutex> lock(state_mutex_);
-    if (target_detected_) {
-      RCLCPP_WARN_THROTTLE(
-        get_logger(), *get_clock(), 3000,
-        "Target already detected, ignoring new %s goal", source.c_str());
-      return;
-    }
-  }
-
   if (require_goal_fix_ &&
     msg->status.status == sensor_msgs::msg::NavSatStatus::STATUS_NO_FIX)
   {
@@ -192,6 +184,7 @@ void InputBridgeNode::processGoalFix(
   }
 
   goal_pub_->publish(out);
+
   RCLCPP_INFO(
     get_logger(),
     "[%s] Goal published: E=%.2f m, N=%.2f m, U=%.2f m",
@@ -208,37 +201,27 @@ void InputBridgeNode::onUavGoalFix(const sensor_msgs::msg::NavSatFix::SharedPtr 
   processGoalFix(msg, "uav");
 }
 
-// 发布停止目标位置
+// 发送取消导航任务指令
 void InputBridgeNode::publishStopGoal()
 {
-  nav_msgs::msg::Odometry odom;
-  bool have = false;
-  {
-    std::lock_guard<std::mutex> lock(state_mutex_);
-    odom = latest_odom_;
-    have = have_odom_;
+  RCLCPP_WARN(get_logger(), "[yolo] Target detected! Cancelling current FollowPath tasks...");
+
+  // 先通知 straight_planner 停止发送新目标（不依赖 action server）
+  if (stop_planner_pub_) {
+    std_msgs::msg::Bool stop_msg;
+    stop_msg.data = true;
+    stop_planner_pub_->publish(stop_msg);
+    RCLCPP_INFO(get_logger(), "[yolo] (1) Sent stop signal to straight_planner.");
   }
 
-  if (!have) {
-    RCLCPP_WARN(
-      get_logger(),
-      "Target detected but no odometry available yet, cannot publish stop goal");
+  // 再尝试取消 FollowPath action
+  if (!follow_path_action_client_->action_server_is_ready()) {
+    RCLCPP_WARN(get_logger(), "FollowPath action server not ready yet, skipping cancel.");
     return;
   }
+  follow_path_action_client_->async_cancel_all_goals();
 
-  geometry_msgs::msg::PoseStamped out;
-  out.header.stamp = now();
-  out.header.frame_id = goal_output_frame_;
-  out.pose.position.x = odom.pose.pose.position.x;
-  out.pose.position.y = odom.pose.pose.position.y;
-  out.pose.position.z = 0.0;
-  out.pose.orientation = odom.pose.pose.orientation;
-
-  goal_pub_->publish(out);
-  RCLCPP_INFO(
-    get_logger(),
-    "[yolo] Target detected! Stop goal published at current pose: x=%.2f, y=%.2f",
-    out.pose.position.x, out.pose.position.y);
+  RCLCPP_INFO(get_logger(), "[yolo] (2) Sent cancel request to FollowPath action server.");
 }
 
 // 处理目标检测信号
@@ -246,14 +229,6 @@ void InputBridgeNode::onTargetDetected(const std_msgs::msg::Bool::SharedPtr msg)
 {
   if (!msg->data) {
     return;
-  }
-
-  {
-    std::lock_guard<std::mutex> lock(state_mutex_);
-    if (target_detected_) {
-      return;
-    }
-    target_detected_ = true;
   }
 
   publishStopGoal();

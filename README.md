@@ -28,10 +28,13 @@ outdoor 导航项目，基于 ROS 2 构建，融合激光雷达感知、SLAM 与
 当同机运行的 YOLO 检测到目标人物时，发布 **`/target_detected`**（`std_msgs/Bool`，`data=true`）。
 
 `nav2_input_bridge` 收到后：
-1. **立即发布当前小车位置**作为新的 `goal_pose`，让 Nav2 就地停止
-2. **置位 `target_detected` 标志**，此后**忽略所有新的 GPS 目标点**（无论来自 `/gp_goal` 还是 `/uav/target_gps`）
+1. 发布 `stop_planner=true` 通知 `straight_planner` 停止发送新路径
+2. 取消 `controller_server` 上正在执行的 FollowPath action，controller 直接减速停车
 
-> 如需重新启动任务，必须重启导航 launch。
+`straight_planner` 收到停止信号后：
+- 取消当前 FollowPath，记录停止时的目标位置
+- 此后收到的目标若与停止位置距离 `< 0.1 m`，则拒绝（防止重复目标导致反复启动）
+- 若收到距离足够远的新目标，则清除停止状态，正常接受并前往
 
 ## 项目结构
 
@@ -55,6 +58,8 @@ outdoor_nav/
 
 ## 环境要求
 
+> **Shell 说明**：本文档命令基于 zsh 编写。使用 bash 时，将 `.zsh` → `.bash`、`.zshrc` → `.bashrc`。
+
 - **操作系统**：Ubuntu 22.04
 - **ROS 发行版**：ROS 2 Humble
 - **编译工具**：`colcon`、`CMake >= 3.16`
@@ -68,7 +73,7 @@ outdoor_nav/
 安装后记得 source 环境：
 
 ```bash
-source /opt/ros/humble/setup.bash
+source /opt/ros/humble/setup.zsh
 ```
 
 ## 克隆仓库
@@ -110,14 +115,148 @@ rosdep install --from-paths src --ignore-src -r -y
 编译完成后，source 本地工作空间：
 
 ```bash
-source install/setup.bash
+source install/setup.zsh
 ```
 
-建议将 source 命令添加到 `~/.bashrc` 中：
+建议将 source 命令添加到 `~/.zshrc` 中：
 
 ```bash
-echo "source [path_to_outdoor_nav]/install/setup.bash" >> ~/.bashrc
+echo "source [path_to_outdoor_nav]/install/setup.zsh" >> ~/.zshrc
 ```
+
+## 仿真环境测试
+
+在实机部署前，建议先在本地仿真环境中验证算法逻辑。仿真使用 Gazebo Classic v11.10.2 + ROS 2 Humble。
+
+### 前置要求
+
+- ROS 2 Humble（已安装）
+- Gazebo Classic v11.10.2
+
+### 1. 创建并编译仿真工作空间
+
+```bash
+mkdir -p [path_to_sim_ws]/src
+cd [path_to_sim_ws]/src
+
+# 克隆 mid360_simulation
+git clone https://github.com/inkccc/mid360_simulation.git
+
+# 确保 gazebo_diffbot 也在 sim_ws/src 下
+# （gazebo_diffbot 需自行准备）
+```
+
+编译仿真依赖：
+
+```bash
+cd [path_to_sim_ws]
+source /opt/ros/humble/setup.zsh
+colcon build --packages-select gazebo_diffbot mid360_simulation --symlink-install
+```
+
+验证插件安装成功：
+
+```bash
+ls install/mid360_simulation/lib | grep libmid360_plugin.so
+```
+
+### 2. 配置 Gazebo 环境变量
+
+将以下环境变量追加到 `~/.zshrc` 以持久化：
+
+```bash
+echo 'export GAZEBO_MODEL_PATH=[path_to_sim_ws]/src/gazebo_diffbot/worlds:$GAZEBO_MODEL_PATH' >> ~/.zshrc
+echo 'export GAZEBO_PLUGIN_PATH=[path_to_sim_ws]/install/lib:$GAZEBO_PLUGIN_PATH' >> ~/.zshrc
+source ~/.zshrc
+```
+
+### 3. 编译 outdoor_nav
+
+```bash
+cd [path_to_outdoor_nav]
+source /opt/ros/humble/setup.zsh
+bash build.sh
+```
+
+### 4. 启动仿真环境
+
+**终端 1 — 启动 Gazebo + diff_bot：**
+
+```bash
+source /opt/ros/humble/setup.zsh
+source [path_to_sim_ws]/install/setup.zsh
+source [path_to_outdoor_nav]/install/setup.zsh
+
+ros2 launch gazebo_diffbot gazebo.launch.py \
+  world:=[path_to_sim_ws]/src/gazebo_diffbot/worlds/slope_with_pillar_2.world
+```
+
+启动后验证 `/odom`、`/livox/lidar`、`/cmd_vel` 等话题正常输出即可。
+
+**终端 2 — 启动导航栈：**
+
+```bash
+cd [path_to_outdoor_nav]
+source /opt/ros/humble/setup.zsh
+source install/setup.zsh
+bash launch.sh
+```
+
+### 5. 功能验证测试
+
+#### 测试 1：基本导航
+
+发送目标点：
+
+```bash
+ros2 topic pub --once /goal_pose geometry_msgs/PoseStamped \
+  '{header: {stamp: {sec: 0}, frame_id: "map"}, pose: {position: {x: 5.0, y: 3.0, z: 0.0}, orientation: {w: 1.0}}}'
+```
+
+预期：机器人开始移动。可在 rviz 中观察局部地图和机器人位置。
+
+监控速度（可选）：
+
+```bash
+ros2 topic echo /cmd_vel
+```
+
+#### 测试 2：YOLO 检测后立即停止
+
+模拟 YOLO 检测到人：
+
+```bash
+ros2 topic pub --once /target_detected std_msgs/msg/Bool '{data: true}'
+```
+
+验证：
+- `/cmd_vel` 速度归零（`vx=0, vy=0, vz=0`）
+- `straight_planner` 日志输出 `Stop requested!`
+
+#### 测试 3：拒绝重复目标 + 接受新目标
+
+1. 发送目标 A：
+   ```bash
+   ros2 topic pub --once /goal_pose geometry_msgs/PoseStamped \
+     '{header: {stamp: {sec: 0}, frame_id: "map"}, pose: {position: {x: 0.0, y: 10.0, z: 0.0}, orientation: {w: 1.0}}}'
+   ```
+
+2. 模拟 YOLO 检测停止：
+   ```bash
+   ros2 topic pub --once /target_detected std_msgs/msg/Bool '{data: true}'
+   ```
+
+3. 再次发送**相同**目标 A：
+   - 预期：`straight_planner` 输出 `Rejecting goal that matches stopped goal`，小车不动
+
+4. 发送**新**目标 B（距离足够远）：
+   ```bash
+   ros2 topic pub --once /goal_pose geometry_msgs/PoseStamped \
+     '{header: {stamp: {sec: 0}, frame_id: "map"}, pose: {position: {x: 10.0, y: 5.0, z: 0.0}, orientation: {w: 1.0}}}'
+   ```
+   - 预期：小车清除停止状态，前往新目标 B
+
+---
 
 ## 实机测试流程
 
@@ -165,13 +304,11 @@ ros2 topic pub --once /uav/target_gps sensor_msgs/msg/NavSatFix \
 
 ### 手动测试 YOLO 停止机制
 
-在小车行驶过程中，可通过以下命令模拟 YOLO 检测到目标，触发立即停车并忽略后续新目标点：
+在小车行驶过程中，可通过以下命令模拟 YOLO 检测到目标，触发立即停车。停止后相同位置的目标会被拒绝，距离足够远的新目标可正常接受：
 
 ```bash
-ros2 topic pub --once /target_detected std_msgs/msg/Bool "{data: true}"
+ros2 topic pub --once /target_detected std_msgs/msg/Bool '{data: true}'
 ```
-
-> 触发后如需重新接受目标点，必须重启导航 launch。
 
 若需单独观察原点反馈：
 
@@ -244,7 +381,7 @@ ros2 launch robot_launch nx_nav2.launch.py
      ```
 
 4. **YOLO 触发后小车会停在哪里？会不会掉头回来？**
-   - 从 YOLO 检测到目标 → 发布 stop goal，端到端延迟约 **150-250 ms**（含图像推理、ROS2 传输、Nav2 控制周期、CAN 响应）。
-   - 按当前线速度(`FollowPath/desired_linear_vel`) **0.5 m/s** 估算，惯性滑行约 **0.1-0.15 m**。
-   - Nav2 的 `general_goal_checker/xy_goal_tolerance` 为 **0.25 m**，因此滑行距离通常落在容忍范围内，**不会触发掉头返回**，仅会原地减速停车。
-   - 若未来提高车速或地面极滑导致滑行超过 0.25 m，可能出现倒车修正，届时可引入“提前制动距离”或“检测框相对位姿”优化。
+   - 当前采用方案B：通过 `stop_planner` + 取消 FollowPath action 实现停止。controller 收到 cancel 后直接减速到零，**不会引入新的目标点**，因此不存在”目标在后方导致掉头”的问题。
+   - 从 YOLO 检测到目标 → `stop_planner` 发出 + cancel action，端到端延迟约 **100-200 ms**（含图像推理、ROS2 传输、action 异步取消、CAN 响应）。
+   - 按当前线速度 `0.5 m/s` 估算，惯性滑行约 **0.05-0.1 m**。
+   - 若未来提高车速，可引入”提前制动距离”或”检测框相对位姿”优化。

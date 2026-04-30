@@ -8,7 +8,9 @@
 
 #include "geometry_msgs/msg/pose_stamped.hpp"
 #include "nav_msgs/msg/odometry.hpp"
+#include "nav2_msgs/action/follow_path.hpp"
 #include "rclcpp/rclcpp.hpp"
+#include "rclcpp_action/rclcpp_action.hpp"
 #include "sensor_msgs/msg/nav_sat_fix.hpp"
 #include "std_msgs/msg/bool.hpp"
 #include "tf2_ros/transform_broadcaster.h"
@@ -22,6 +24,8 @@ public:
   explicit InputBridgeNode(const rclcpp::NodeOptions & options = rclcpp::NodeOptions());
 
 private:
+  using FollowPath = nav2_msgs::action::FollowPath;
+
   void onOdom(const nav_msgs::msg::Odometry::SharedPtr msg);
   void onGoalFix(const sensor_msgs::msg::NavSatFix::SharedPtr msg);
   void onUavGoalFix(const sensor_msgs::msg::NavSatFix::SharedPtr msg);
@@ -39,6 +43,7 @@ private:
   std::string goal_input_topic_;
   std::string uav_goal_input_topic_;
   std::string target_detected_topic_;
+  std::string follow_path_action_topic_;
   std::string goal_output_topic_;
   std::string goal_output_frame_;
   bool require_goal_fix_;
@@ -49,6 +54,9 @@ private:
   rclcpp::Subscription<sensor_msgs::msg::NavSatFix>::SharedPtr uav_goal_sub_;
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr target_detected_sub_;
   rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr goal_pub_;
+  rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr stop_planner_pub_;
+
+  rclcpp_action::Client<FollowPath>::SharedPtr follow_path_action_client_;
 
   std::unique_ptr<tf2_ros::TransformBroadcaster> tf_broadcaster_;
 
@@ -57,11 +65,6 @@ private:
   double origin_lat_{0.0};
   double origin_lon_{0.0};
   double origin_alt_{0.0};
-
-  std::mutex state_mutex_;
-  bool target_detected_{false};
-  nav_msgs::msg::Odometry latest_odom_;
-  bool have_odom_{false};
 
   static constexpr double WGS84_R_{6378137.0};
 };

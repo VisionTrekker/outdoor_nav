@@ -11,6 +11,7 @@
 #include "nav2_msgs/action/follow_path.hpp"
 #include "nav2_util/lifecycle_node.hpp"
 #include "rclcpp_action/rclcpp_action.hpp"
+#include "std_msgs/msg/bool.hpp"
 #include "tf2_ros/buffer.h"
 #include "tf2_ros/transform_listener.h"
 
@@ -35,6 +36,7 @@ private:
   using GoalHandleFollowPath = rclcpp_action::ClientGoalHandle<FollowPath>;
 
   void onGoal(const geometry_msgs::msg::PoseStamped::SharedPtr msg);
+  void onStop(const std_msgs::msg::Bool::SharedPtr msg);
   void onPlanTick();
   nav_msgs::msg::Path buildStraightPath(
     const geometry_msgs::msg::PoseStamped & start_map,
@@ -55,12 +57,17 @@ private:
   std::unique_ptr<tf2_ros::Buffer> tf_buffer_;
   std::shared_ptr<tf2_ros::TransformListener> tf_listener_;
   rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr goal_sub_;
+  rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr stop_sub_;
   rclcpp_action::Client<FollowPath>::SharedPtr action_client_;
   rclcpp::TimerBase::SharedPtr timer_;
 
   std::mutex state_mutex_;
+  bool stop_requested_{false};
   bool goal_valid_{false};
   bool wait_fp_finish_after_reached_{false};
+  double stopped_goal_x_{0.0};
+  double stopped_goal_y_{0.0};
+  bool goal_was_stopped_{false};
   geometry_msgs::msg::PoseStamped latest_goal_;
   GoalHandleFollowPath::SharedPtr active_goal_handle_;
 };

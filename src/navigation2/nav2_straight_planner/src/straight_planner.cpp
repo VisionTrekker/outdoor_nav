@@ -45,6 +45,10 @@ StraightPlanner::on_configure(const rclcpp_lifecycle::State & /*state*/)
     "goal_pose", rclcpp::QoS(10),
     std::bind(&StraightPlanner::onGoal, this, std::placeholders::_1));
 
+  stop_sub_ = create_subscription<std_msgs::msg::Bool>(
+    "stop_planner", rclcpp::QoS(10),
+    std::bind(&StraightPlanner::onStop, this, std::placeholders::_1));
+
   action_client_ = rclcpp_action::create_client<FollowPath>(
     this, action_name_, reentrant_group_);
 
@@ -100,6 +104,7 @@ nav2_util::CallbackReturn
 StraightPlanner::on_cleanup(const rclcpp_lifecycle::State & /*state*/)
 {
   goal_sub_.reset();
+  stop_sub_.reset();
   action_client_.reset();
   timer_.reset();
   tf_listener_.reset();
@@ -136,12 +141,55 @@ void StraightPlanner::onGoal(const geometry_msgs::msg::PoseStamped::SharedPtr ms
     return;
   }
   std::lock_guard<std::mutex> lock(state_mutex_);
+
+  // If previously stopped by YOLO, check if this goal matches the stopped goal
+  if (goal_was_stopped_) {
+    double dx = msg->pose.position.x - stopped_goal_x_;
+    double dy = msg->pose.position.y - stopped_goal_y_;
+    double dist = std::hypot(dx, dy);
+
+    if (dist < 0.1) {
+      RCLCPP_WARN(
+        get_logger(),
+        "Rejecting goal that matches stopped goal (dist=%.3f m < 0.1 m)", dist);
+      return;  // Discard, do not update latest_goal_
+    }
+    // Different goal, clear the stopped state and allow stop to work again
+    goal_was_stopped_ = false;
+    stop_requested_ = false;
+    RCLCPP_INFO(
+      get_logger(),
+      "New goal is different from stopped goal (dist=%.3f m), accepting", dist);
+  }
+
   wait_fp_finish_after_reached_ = false;
   latest_goal_ = *msg;
   goal_valid_ = true;
   RCLCPP_INFO(
     get_logger(), "New goal [%.3f, %.3f] frame=%s", msg->pose.position.x,
     msg->pose.position.y, msg->header.frame_id.c_str());
+}
+
+void StraightPlanner::onStop(const std_msgs::msg::Bool::SharedPtr /*msg*/)
+{
+  std::lock_guard<std::mutex> lock(state_mutex_);
+  if (stop_requested_) {
+    return;
+  }
+  stop_requested_ = true;
+  RCLCPP_WARN(get_logger(), "Stop requested! Cancelling active FollowPath and blocking new goals");
+  if (active_goal_handle_ && action_client_) {
+    action_client_->async_cancel_goal(active_goal_handle_);
+    active_goal_handle_.reset();
+  }
+  // Record the stopped goal position before invalidating
+  stopped_goal_x_ = latest_goal_.pose.position.x;
+  stopped_goal_y_ = latest_goal_.pose.position.y;
+  goal_was_stopped_ = true;
+  RCLCPP_INFO(
+    get_logger(), "Recorded stopped goal position [%.3f, %.3f]", stopped_goal_x_, stopped_goal_y_);
+  goal_valid_ = false;
+  wait_fp_finish_after_reached_ = false;
 }
 
 nav_msgs::msg::Path StraightPlanner::buildStraightPath(
@@ -196,6 +244,9 @@ void StraightPlanner::onPlanTick()
 
   {
     std::lock_guard<std::mutex> lock(state_mutex_);
+    if (stop_requested_) {
+      return;
+    }
     if (!goal_valid_) {
       return;
     }
@@ -311,7 +362,9 @@ void StraightPlanner::onPlanTick()
     };
   opts.result_callback = [this](const GoalHandleFollowPath::WrappedResult & result) {
     std::lock_guard<std::mutex> lock(state_mutex_);
-    active_goal_handle_.reset();
+    if (active_goal_handle_ && active_goal_handle_->get_goal_id() == result.goal_id) {
+      active_goal_handle_.reset();
+    }
     if (wait_fp_finish_after_reached_) {
       goal_valid_ = false;
       wait_fp_finish_after_reached_ = false;
