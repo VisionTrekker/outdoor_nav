@@ -1,6 +1,6 @@
 # outdoor_nav
 
-outdoor 导航项目，基于 ROS 2 构建，融合激光雷达感知、SLAM 与 Nav2 导航框架，运行在 NVIDIA Orin NX 开发板上。
+outdoor 导航项目，基于 ROS 2 构建，融合激光雷达感知与 Nav2 导航框架，运行在 NVIDIA Orin NX 开发板上。
 
 ## 系统架构与运行逻辑
 
@@ -46,12 +46,16 @@ outdoor_nav/
 ├── src/navigation2/               # 导航相关包
 │   ├── nav2_common/               # Nav2 公共库
 │   ├── nav2_controller/           # 控制器
+│   ├── nav2_core/                 # 核心接口定义
 │   ├── nav2_costmap_2d/           # 代价地图
+│   ├── nav2_input_bridge/         # GPS→ENU 目标坐标转换 + YOLO 停止
+│   ├── nav2_lifecycle_manager/    # 生命周期管理
 │   ├── nav2_msgs/                 # 自定义消息
 │   ├── nav2_regulated_pure_pursuit_controller/  # 纯追踪控制器
+│   ├── nav2_straight_planner/     # 直线路径规划器
 │   ├── nav2_util/                 # 工具函数
-│   └── spatio_temporal_voxel_layer/             # 3D 体素层 (submodule)
-├── src/slam/                      # SLAM
+│   └── nav2_voxel_grid/           # 体素网格
+├── src/slam/                      # SLAM（仅离线建图用，不参与导航运行时）
 │   └── FAST_LIO/                  # 快速激光 SLAM (submodule)
 └── src/robot_launch/              # 启动文件与配置
 ```
@@ -350,21 +354,13 @@ bash launch.sh
 
 ## 模块调试（开发场景）
 
-实机流程已经封装了最常用的启动脚本，如需单独调试某个模块，可直接使用：
-
 ### 建图（FAST_LIO + Livox）
 
-```bash
-ros2 launch robot_launch nav2.launch.py
-```
-
-### 单独启动导航（不带 GPS 目标输入）
+> FAST-LIO 仅用于离线建图/调试，不参与导航运行时。日常编译已通过 `build.sh` 中的 `--packages-skip fast_lio` 跳过，如需编译 FAST-LIO，请使用 `./build.sh --packages-skip ''` 或单独编译：`colcon build --packages-select fast_lio --symlink-install --cmake-args -DBUILD_TESTING=OFF`。
 
 ```bash
-ros2 launch robot_launch nx_nav2.launch.py
+bash launch_fastlio.sh
 ```
-
-> 更多 launch 文件及参数请参考 `src/robot_launch/launch/` 目录。
 
 ## 常见问题
 
@@ -374,13 +370,7 @@ ros2 launch robot_launch nx_nav2.launch.py
 2. **编译时找不到 Livox-SDK2**
    - 请参考 `src/driver/livox_ros_driver2/README.md` 手动编译安装 Livox-SDK2。
 
-3. **spatio_temporal_voxel_layer 编译失败**
-   - 该包依赖 OpenVDB，若 `rosdep` 未自动安装，请手动安装 `libopenvdb-dev`：
-     ```bash
-     sudo apt install libopenvdb-dev
-     ```
-
-4. **YOLO 触发后小车会停在哪里？会不会掉头回来？**
+3. **YOLO 触发后小车会停在哪里？会不会掉头回来？**
    - 当前采用方案B：通过 `stop_planner` + 取消 FollowPath action 实现停止。controller 收到 cancel 后直接减速到零，**不会引入新的目标点**，因此不存在”目标在后方导致掉头”的问题。
    - 从 YOLO 检测到目标 → `stop_planner` 发出 + cancel action，端到端延迟约 **100-200 ms**（含图像推理、ROS2 传输、action 异步取消、CAN 响应）。
    - 按当前线速度 `0.5 m/s` 估算，惯性滑行约 **0.05-0.1 m**。

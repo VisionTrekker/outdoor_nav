@@ -5,11 +5,14 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Build Commands
 
 ```bash
-# Build all packages
+# Build all packages (skipping fast_lio by default)
 ./build.sh
 
+# Build including fast_lio (for offline mapping)
+./build.sh --packages-skip ''
+
 # Build with tests disabled (default)
-colcon build --symlink-install --cmake-args -DBUILD_TESTING=OFF
+colcon build --symlink-install --packages-skip fast_lio --cmake-args -DBUILD_TESTING=OFF
 ```
 
 ## Launch Scripts
@@ -77,9 +80,8 @@ git clone --recurse-submodules git@github.com:VisionTrekker/outdoor_nav.git
 git submodule update --init --recursive
 ```
 
-- `src/slam/FAST_LIO/` — 激光 SLAM
+- `src/slam/FAST_LIO/` — 激光 SLAM（仅离线建图用，不参与导航运行时）
 - `src/driver/livox_ros_driver2/` — Livox 激光雷达驱动
-- `src/navigation2/spatio_temporal_voxel_layer/` — 3D 体素层
 
 ## 关键文件
 
