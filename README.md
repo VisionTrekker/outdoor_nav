@@ -6,6 +6,10 @@ outdoor 导航项目，基于 ROS 2 构建，融合激光雷达感知与 Nav2 �
 
 **目标**：无人机获取目标人物的 GPS 坐标后发送给地面端小车，小车根据自身 GPS 位置和目标 GPS 位置进行全局无图路点导航 + 局部动态避障。
 
+支持两种平台：
+- **轮式小车**：使用 CAN 总线驱动 + PX4 EKF2 融合定位
+- **Go2-W 机器狗**：使用 DDS 高层运动控制 + PX4 EKF2 融合定位
+
 为减少 GPS/IMU 融合算法的开发量，小车状态（位姿 + 速度）直接采用 **PX4 EKF2 融合定位**（`/mavros/local_position/odom`）。
 
 ### 坐标系统
@@ -41,8 +45,9 @@ outdoor 导航项目，基于 ROS 2 构建，融合激光雷达感知与 Nav2 �
 ```
 outdoor_nav/
 ├── src/driver/                    # 硬件驱动
+│   ├── go2w_driver/              # Go2-W DDS 驱动（替代 ros2can）
 │   ├── livox_ros_driver2/         # Livox 激光雷达驱动 (submodule)
-│   └── ros2can/                   # CAN 总线通信节点
+│   └── ros2can/                   # 小车 CAN 总线通信节点（Go2-W 不使用）
 ├── src/navigation2/               # 导航相关包
 │   ├── nav2_common/               # Nav2 公共库
 │   ├── nav2_controller/           # 控制器
@@ -350,6 +355,112 @@ bash launch_loc.sh
 bash launch.sh
 ```
 
+---
+## Go2-W 部署
+
+本节记录将 outdoor_nav 部署到宇树 Go2-W 机器人的完整流程。
+
+### go2w_driver 驱动节点
+
+`go2w_driver` 替代原 ros2can，实现 `/cmd_vel` → `/api/sport/request` 的桥接：
+
+- **订阅**：`/cmd_vel` (geometry_msgs/Twist)
+- **发布**：`/api/sport/request` (unitree_api/Request)
+- **订阅状态**：`/lf/sportmodestate` (unitree_go/SportModeState)
+- **核心功能**：
+  - 速度限幅：vx[-1.5,1.5], vy[-0.6,0.6], vyaw[-1.0,1.0]
+  - 超时保护：0.5s 无新指令自动 StopMove（狗 1s 无指令自动停下）
+  - 启动序列：延迟 2s 发送 BalanceStand，等待 mode=1 后开始接受指令
+
+### NX 实机测试流程
+
+#### 1. 网络配置
+
+NX 通过 USB 网口连接狗的主控板：
+
+```bash
+# 查询网口名称（通常为 enx* 格式）
+ifconfig
+
+# 配置静态 IP（狗的机载电脑 IP 为 192.168.123.161）
+sudo ip addr add 192.168.123.222/24 dev <网口名>
+sudo ip link set <网口名> up
+
+# 验证连接
+ping 192.168.123.161
+```
+
+#### 2. 代码同步
+
+```bash
+rsync -avz --progress \
+    --exclude='build/' \
+    --exclude='install/' \
+    --exclude='log/' \
+    --exclude='src/slam/FAST_LIO/' \
+    --exclude='*.so' \
+    --exclude='*.a' \
+    /media/lenovo/disk/KT5/outdoor_nav/ \
+    nhy@<NX_IP>:~/ww/outdoor_nav/
+```
+
+#### 3. NX 上单独编译 go2w_driver
+
+```bash
+cd ~/ww/outdoor_nav
+source /opt/ros/humble/setup.bash
+source ~/ww/3rd/unitree_ros2/cyclonedds_ws/install/setup.bash
+rosdep install --from-paths src --ignore-src -r -y
+colcon build --packages-select go2w_driver --symlink-install
+```
+
+#### 4. 启动 wheeled_sport 服务
+
+在宇树 App 中：设置 → 服务状态 → 启动 `wheeled_sport`
+
+#### 5. 测试 go2w_driver
+
+**终端 1**：DDS 联通狗机上电脑，并启动 go2w_driver_node
+```bash
+# DDS 连接狗
+source /opt/ros/humble/setup.bash
+source ~/ww/3rd/unitree_ros2/cyclonedds_ws/install/setup.bash
+export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+export CYCLONEDDS_URI='<CycloneDDS><Domain><General><Interfaces>
+    <NetworkInterface name="<网口名>" priority="default" multicast="default" />
+</Interfaces></General></Domain></CycloneDDS>'
+
+# 查询能否成功接收到狗的topic
+ros2 topic list | grep -E "(lf|sport|mode)"
+# 如果有 `/api/sport/request`、`/lf/sportmodestate`等说明成功
+
+# 启动 go2w_driver_node
+source ~/ww/outdoor_nav/install/setup.bash
+ros2 run go2w_driver go2w_driver_node --ros-args -p require_ready:=false
+```
+
+**终端 2**：查看 /api/sport/request
+```bash
+source /opt/ros/humble/setup.bash
+source ~/ww/3rd/unitree_ros2/cyclonedds_ws/install/setup.bash
+export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+ros2 topic echo /api/sport/request
+```
+
+**终端 3**：发送 /cmd_vel
+```bash
+source /opt/ros/humble/setup.bash
+source ~/ww/3rd/unitree_ros2/cyclonedds_ws/install/setup.bash
+export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+ros2 topic pub --once /cmd_vel geometry_msgs/msg/Twist "{linear: {x: 0.5, y: 0.0, z: 0.0}, angular: {x: 0.0, y: 0.0, z: 0.0}}"
+```
+
+**预期结果**：
+- 终端 1 输出 `Sending BalanceStand command...`
+- 终端 2 收到 api_id=1002 (BalanceStand)、1008 (Move)、1003 (StopMove)
+- 狗实际向前运动约 0.5s 后停止
+
+---
 
 
 ## 模块调试（开发场景）
