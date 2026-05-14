@@ -390,7 +390,23 @@ sudo ip link set <网口名> up
 ping 192.168.123.161
 ```
 
-#### 2. 代码同步
+#### 2. 设置 DDS 通信网口
+
+> **重要**：`launch_go2w.sh` 和 `launch_all_go2w.sh` 要求 `GO2W_NET_IFACE` 环境变量必须设置，否则会报错退出。`GO2W_NET_IFACE` 指定 CycloneDDS 使用的网络接口，必须设置为连接狗的 USB 网口。
+
+```bash
+# 查询 USB 网口名称（通常为 enx* 格式）
+ifconfig
+
+# 临时设置（仅当前终端生效）
+export GO2W_NET_IFACE=<网口名>
+
+# 持久化设置（推荐，每次开机自动生效）
+echo 'export GO2W_NET_IFACE=<网口名>' >> ~/.bashrc
+source ~/.bashrc
+```
+
+#### 3. 代码同步
 
 ```bash
 rsync -avz --progress \
@@ -404,61 +420,59 @@ rsync -avz --progress \
     nhy@<NX_IP>:~/ww/outdoor_nav/
 ```
 
-#### 3. NX 上单独编译 go2w_driver
+#### 3. NX 上编译
 
 ```bash
 cd ~/ww/outdoor_nav
-source /opt/ros/humble/setup.bash
+# 编译只需要 unitree_go 包可见
 source ~/ww/3rd/unitree_ros2/cyclonedds_ws/install/setup.bash
-rosdep install --from-paths src --ignore-src -r -y
-colcon build --packages-select go2w_driver --symlink-install
+
+bash build.sh
 ```
+
+> `setup_go2w.sh` 用于运行时启动 DDS 通信（需要 `GO2W_NET_IFACE`），而编译阶段只需 `unitree_go` 包在 `CMAKE_PREFIX_PATH` 中可见，两者使用场景不同。
 
 #### 4. 启动 wheeled_sport 服务
 
 在宇树 App 中：设置 → 服务状态 → 启动 `wheeled_sport`
 
-#### 5. 测试 go2w_driver
+#### 5. 测试 go2w_driver（单独测试运控）
 
-**终端 1**：DDS 联通狗机上电脑，并启动 go2w_driver_node
+> 确保已设置 `GO2W_NET_IFACE`（见步骤 2）
+
+**终端 1**：启动 go2w_driver_node
 ```bash
 # DDS 连接狗
-source /opt/ros/humble/setup.bash
-source ~/ww/3rd/unitree_ros2/cyclonedds_ws/install/setup.bash
-export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
-export CYCLONEDDS_URI='<CycloneDDS><Domain><General><Interfaces>
-    <NetworkInterface name="<网口名>" priority="default" multicast="default" />
-</Interfaces></General></Domain></CycloneDDS>'
-
+source setup_go2w.sh
 # 查询能否成功接收到狗的topic
 ros2 topic list | grep -E "(lf|sport|mode)"
 # 如果有 `/api/sport/request`、`/lf/sportmodestate`等说明成功
 
 # 启动 go2w_driver_node
-source ~/ww/outdoor_nav/install/setup.bash
-ros2 run go2w_driver go2w_driver_node --ros-args -p require_ready:=false
+bash launch_go2w.sh
 ```
 
 **终端 2**：查看 /api/sport/request
 ```bash
-source /opt/ros/humble/setup.bash
-source ~/ww/3rd/unitree_ros2/cyclonedds_ws/install/setup.bash
-export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+source setup_go2w.sh
 ros2 topic echo /api/sport/request
 ```
 
 **终端 3**：发送 /cmd_vel
 ```bash
-source /opt/ros/humble/setup.bash
-source ~/ww/3rd/unitree_ros2/cyclonedds_ws/install/setup.bash
-export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+source setup_go2w.sh
+# 前进
 ros2 topic pub --once /cmd_vel geometry_msgs/msg/Twist "{linear: {x: 0.5, y: 0.0, z: 0.0}, angular: {x: 0.0, y: 0.0, z: 0.0}}"
+
+# 旋转
+ros2 topic pub --once /cmd_vel geometry_msgs/msg/Twist "{linear: {x: 0.0, y: 0.0, z: 0.0}, angular: {x: 0.0, y: 0.0, z: 0.5}}"
 ```
 
 **预期结果**：
 - 终端 1 输出 `Sending BalanceStand command...`
 - 终端 2 收到 api_id=1002 (BalanceStand)、1008 (Move)、1003 (StopMove)
-- 狗实际向前运动约 0.5s 后停止
+- 前进：狗实际向前运动约 0.5s 后停止（超时自动 StopMove）
+- 旋转：狗原地旋转，0.5s 后停止
 
 ---
 
