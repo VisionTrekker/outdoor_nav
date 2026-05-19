@@ -2,6 +2,7 @@
 
 import os
 
+import yaml
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
@@ -10,25 +11,27 @@ from launch.launch_description_sources import AnyLaunchDescriptionSource, Python
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
+
+def load_ref_from_yaml(yaml_path):
+    """Load reference lat/lon/alt from nav2_input_bridge params."""
+    with open(yaml_path, "r") as f:
+        params = yaml.safe_load(f)
+    bridge = params.get("nav2_input_bridge", {}).get("ros__parameters", {})
+    return (
+        bridge.get("reference_latitude", 30.8135718),
+        bridge.get("reference_longitude", 120.8338169),
+        bridge.get("reference_altitude", 12.318126322268082),
+    )
+
+
 def generate_launch_description():
     robot_launch_share = get_package_share_directory("robot_launch")
     nav2_launch_file = os.path.join(robot_launch_share, "launch", "gp_goal_nx_nav2.launch.py")
+    nav2_params_file = os.path.join(robot_launch_share, "config", "gp_goal_nx_nav2.yaml")
 
-    declare_ref_lat = DeclareLaunchArgument(
-        "reference_latitude",
-        default_value="30.8135718",
-        description="ENU origin latitude for auto gp_origin set.",
-    )
-    declare_ref_lon = DeclareLaunchArgument(
-        "reference_longitude",
-        default_value="120.8338169",
-        description="ENU origin longitude for auto gp_origin set.",
-    )
-    declare_ref_alt = DeclareLaunchArgument(
-        "reference_altitude",
-        default_value="12.318126322268082",
-        description="ENU origin altitude for auto gp_origin set.",
-    )
+    # Load reference from YAML so only one file needs editing per site
+    ref_lat, ref_lon, ref_alt = load_ref_from_yaml(nav2_params_file)
+
     declare_use_auto_origin = DeclareLaunchArgument(
         "use_auto_origin",
         default_value="true",
@@ -40,9 +43,6 @@ def generate_launch_description():
         description="MAVROS FCU URL.",
     )
 
-    ref_lat = LaunchConfiguration("reference_latitude")
-    ref_lon = LaunchConfiguration("reference_longitude")
-    ref_alt = LaunchConfiguration("reference_altitude")
     fcu_url = LaunchConfiguration("fcu_url")
     use_auto_origin = LaunchConfiguration("use_auto_origin")
 
@@ -84,9 +84,6 @@ def generate_launch_description():
 
     return LaunchDescription(
         [
-            declare_ref_lat,
-            declare_ref_lon,
-            declare_ref_alt,
             declare_use_auto_origin,
             declare_fcu_url,
             car_driver_launch,
