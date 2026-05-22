@@ -399,12 +399,34 @@ ping 192.168.123.161
 ifconfig
 
 # 临时设置（仅当前终端生效）
-export GO2W_NET_IFACE=<网口名>
+export GO2W_NET_IFACE=<连接狗的网口名>
 
 # 持久化设置（推荐，每次开机自动生效）
-echo 'export GO2W_NET_IFACE=<网口名>' >> ~/.bashrc
+echo 'export GO2W_NET_IFACE=<连接狗的网口名>' >> ~/.bashrc
 source ~/.bashrc
 ```
+
+#### 2.1 可选：配置局域网网口（用于远程 RViz）
+
+如果需要从本机远程查看点云和导航状态，需要配置第二个网口：
+
+```bash
+# 设置局域网网口（连接本机的网口）
+export GO2W_LAN_IFACE=<局域网网口名>
+
+# 持久化设置
+echo 'export GO2W_LAN_IFACE=<局域网网口名>' >> ~/.bashrc
+source ~/.bashrc
+```
+
+**网口配置示例**（根据实际情况修改）：
+
+| 网口 | IP 地址 | 用途 |
+|------|--------|------|
+| `enx0826ae32db83` | 192.168.123.222 | 连接 Go2W 狗 |
+| `enP8p1s0` | 10.88.103.187 | 连接局域网（本机） |
+
+设置后，`setup_go2w.sh` 会自动配置 CycloneDDS 使用两个网口进行通信。
 
 #### 3. 代码同步
 
@@ -420,7 +442,7 @@ rsync -avz --progress \
     nhy@<NX_IP>:~/ww/outdoor_nav/
 ```
 
-#### 3. NX 上编译
+#### 4. NX 上编译
 
 ```bash
 cd ~/ww/outdoor_nav
@@ -432,49 +454,124 @@ bash build.sh
 
 > `setup_go2w.sh` 用于运行时启动 DDS 通信（需要 `GO2W_NET_IFACE`），而编译阶段只需 `unitree_go` 包在 `CMAKE_PREFIX_PATH` 中可见，两者使用场景不同。
 
-#### 4. 启动 wheeled_sport 服务
+#### 5. 启动 wheeled_sport 服务
 
 在宇树 App 中：设置 → 服务状态 → 启动 `wheeled_sport`
 
-#### 5. 测试 go2w_driver（单独测试运控）
+#### 6. 全系统启动
 
 > 确保已设置 `GO2W_NET_IFACE`（见步骤 2）
+> 启动脚本会从 `src/robot_launch/config/go2w_nav2.yaml` 的 `nav2_input_bridge` 参数中读取 `reference_latitude/longitude/altitude`，作为 `gp_origin` 原点坐标，无需单独修改。
 
-**终端 1**：启动 go2w_driver_node
 ```bash
-# DDS 连接狗
+cd ~/ww/outdoor_nav
+source ~/ww/3rd/unitree_ros2/cyclonedds_ws/install/setup.bash
 source setup_go2w.sh
 # 查询能否成功接收到狗的topic
 ros2 topic list | grep -E "(lf|sport|mode)"
-# 如果有 `/api/sport/request`、`/lf/sportmodestate`等说明成功
 
-# 启动 go2w_driver_node
-bash launch_go2w.sh
+bash launch_all_go2w.sh
 ```
 
-**终端 2**：查看 /api/sport/request
+#### 7. GPS 目标点下发
+
+系统就绪后（另一个终端）：
+
 ```bash
-source setup_go2w.sh
-ros2 topic echo /api/sport/request
+source ~/ww/3rd/unitree_ros2/cyclonedds_ws/install/setup.bash
+ros2 topic pub --once /gp_goal sensor_msgs/msg/NavSatFix \
+  "{header: {frame_id: 'gps'}, latitude: 30.8135718, longitude: 120.8338169, altitude: 12.318126322268082}"
 ```
 
-**终端 3**：发送 /cmd_vel
-```bash
-source setup_go2w.sh
-# 前进
-ros2 topic pub --once /cmd_vel geometry_msgs/msg/Twist "{linear: {x: 0.5, y: 0.0, z: 0.0}, angular: {x: 0.0, y: 0.0, z: 0.0}}"
+预期：狗开始朝目标方向运动。
 
-# 旋转
+#### 8. 监控 /cmd_vel
+
+```bash
+source ~/ww/3rd/unitree_ros2/cyclonedds_ws/install/setup.bash
+ros2 topic echo /cmd_vel
+```
+
+验证速度指令正常输出。
+
+#### 9. 测试转向
+
+```bash
+source ~/ww/3rd/unitree_ros2/cyclonedds_ws/install/setup.bash
 ros2 topic pub --once /cmd_vel geometry_msgs/msg/Twist "{linear: {x: 0.0, y: 0.0, z: 0.0}, angular: {x: 0.0, y: 0.0, z: 0.5}}"
 ```
 
-**预期结果**：
-- 终端 1 输出 `Sending BalanceStand command...`
-- 终端 2 收到 api_id=1002 (BalanceStand)、1008 (Move)、1003 (StopMove)
-- 前进：狗实际向前运动约 0.5s 后停止（超时自动 StopMove）
-- 旋转：狗原地旋转，0.5s 后停止
+预期：狗原地旋转。
 
----
+#### 10. 测试 YOLO 停止机制
+
+在狗运动过程中（另一个终端）：
+
+```bash
+source ~/ww/3rd/unitree_ros2/cyclonedds_ws/install/setup.bash
+ros2 topic pub --once /target_detected std_msgs/msg/Bool '{data: true}'
+```
+
+预期：`/cmd_vel` 速度归零，狗立即停止。
+
+### 跳过 go2w_driver（仅测试定位和导航）
+
+如需在狗不运动的情况下测试定位、MID360 障碍物显示和 Nav2 导航流程，可以注释掉 `outdoor_all_go2w.launch.py` 中的 `go2w_driver_launch`：
+
+```python
+# go2w_driver_launch,
+```
+
+这样可以正常验证：
+- MAVROS 定位（`/mavros/local_position/odom`）
+- MID360 障碍物在 RViz costmap 中显示
+- GPS 目标点下发和导航规划
+
+### 参数调整（如需要）
+
+| 参数 | 文件位置 |
+|------|----------|
+| 原点经纬度 | `src/robot_launch/config/go2w_nav2.yaml` 的 `nav2_input_bridge` 节点 |
+| 导航参数 | `src/robot_launch/config/go2w_nav2.yaml` |
+| MID360 外参 | `src/robot_launch/launch/go2w_nav2.launch.py` 第 66 行 `static_tf_base_lidar` |
+
+### 跨机 RViz 查看 NX 点云
+
+在本机（开发机）上通过 RViz 查看 NX 发布的 `/livox/lidar` 点云，需确保 DDS 通信正常。
+
+**步骤 1**：确保本机与 NX 在同一 ROS 域
+
+```bash
+# 临时设置（仅当前终端生效）
+export ROS_DOMAIN_ID=18
+
+# 持久化设置（推荐）
+echo 'export ROS_DOMAIN_ID=18' >> ~/.bashrc
+source ~/.bashrc
+```
+
+**步骤 2**：设置本机网口（连接局域网的网口）
+
+<本机连接局域网的网口为 `eno1`，则配置如下：
+
+```bash
+# 临时设置（仅当前终端生效）
+export CYCLONEDDS_URI='<CycloneDDS><Domain><General><Interfaces><NetworkInterface name="eno1" priority="default"/></Interfaces></General></Domain></CycloneDDS>'
+```
+
+**步骤 3**：验证话题可达
+
+```bash
+ros2 topic list | grep livox
+```
+
+若能看到 `/livox/lidar` 和 `/livox/imu`，说明 DDS 发现正常。
+
+**步骤 4**：在 RViz 中添加点云
+
+1. 本机启动 RViz：`rviz2`
+2. Fixed Frame 设置为 `map`
+3. 添加 `By Topic` → `/livox/lidar` → `PointCloud2`
 
 
 ## 模块调试（开发场景）
