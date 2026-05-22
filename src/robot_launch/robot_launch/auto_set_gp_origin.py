@@ -64,7 +64,7 @@ class AutoSetGpOrigin(Node):
         msg.position.altitude = self.alt
         self.pub.publish(msg)
         self.get_logger().info(
-            f"Published set_gp_origin (attempt {self.retry_count}/{self.max_retries})"
+            f"Published set_gp_origin [{self.lat:.8f}, {self.lon:.8f}, {self.alt:.3f}] (attempt {self.retry_count}/{self.max_retries})"
         )
 
         # Start verify timeout timer
