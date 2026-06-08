@@ -56,12 +56,12 @@ public:
     const Eigen::Isometry3d & T_odom_base);
 
   // Apply latched offset to a per-msg odom pose. Returns identity if not latched.
-  Eigen::Isometry3d applyOffset(const Eigen::Isometry3d & T_odom_base) const;
+  [[nodiscard]] Eigen::Isometry3d applyOffset(const Eigen::Isometry3d & T_odom_base) const;
 
   // Feed current snapshot of inputs. Updates state_ and (on transition to LATCHED)
   // latches T_ENU_odom_ from the stored first_aft_mapped_ and T_ENU_base_latch_.
   // Returns true if state changed.
-  bool update(const AlignInputs & inputs);
+  [[nodiscard]] bool update(const AlignInputs & inputs);
 
   // Force re-latch (e.g. service call). Goes to RELATCHING.
   void requestRelatch();

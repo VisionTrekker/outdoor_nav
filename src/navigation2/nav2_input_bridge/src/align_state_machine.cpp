@@ -1,6 +1,8 @@
 // Copyright 2026, outdoor_nav maintainers.
 #include "nav2_input_bridge/align_state_machine.hpp"
 
+#include <cmath>
+
 namespace nav2_input_bridge
 {
 
@@ -51,7 +53,6 @@ bool AlignStateMachine::update(const AlignInputs & i)
       break;
     case AlignState::READY_TO_LATCH:
       latchFromInputs(i);
-      relatch_attempts_ = 0;
       resetFatalElapsedS();
       if (last_off_yaw_ > 0.2) {
         state_ = AlignState::RELATCHING;
