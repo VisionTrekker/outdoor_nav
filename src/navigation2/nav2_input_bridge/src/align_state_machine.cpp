@@ -56,7 +56,7 @@ bool AlignStateMachine::update(const AlignInputs & i)
       resetFatalElapsedS();
       if (last_off_yaw_ > 0.2) {
         state_ = AlignState::RELATCHING;
-        relatch_attempts_ = 1;
+        relatch_attempts_ += 1;  // accumulate, don't reset
       } else {
         state_ = AlignState::LATCHED;
       }
