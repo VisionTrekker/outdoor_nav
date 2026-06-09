@@ -24,15 +24,15 @@ enum class AlignState : std::uint8_t
 // Snapshot of all 8 conditions required to enter READY_TO_LATCH (spec §2.4).
 struct AlignInputs
 {
-  bool aft_mapped_seen = false;        // DC-1
-  bool mavros_global_valid = false;    // DC-2
-  bool mavros_heading_valid = false;   // DC-3
-  bool gp_origin_verified = false;     // DC-4
-  bool gps_quality_ok = false;         // DC-5 (fix_type>=6, sat>=12, h_acc<=500)
-  bool ekf2_cov_low = false;           // DC-6 (sqrt(cov trace)<=0.5 AND cov[35]<=0.05)
-  bool ekf2_state_ok = false;          // DC-7
-  double time_consistency_diff_s = 0.0;  // DC-8 (timestamp diff)
-  double time_consistency_max_s = 0.5;   // configured threshold
+  bool aft_mapped_seen = false;        // at least one /aft_mapped_to_init message received
+  bool mavros_global_valid = false;    // /mavros/global_position/global with usable fix
+  bool mavros_heading_valid = false;   // /mavros/global_position/compass_hdg with valid heading
+  bool gp_origin_verified = false;     // /mavros/global_position/gp_origin received and validated
+  bool gps_quality_ok = false;         // mavros GPSRAW: fix_type>=6, sat>=12, h_acc<=500 mm
+  bool ekf2_cov_low = false;           // /mavros/local_position/odom covariance within bounds
+  bool ekf2_state_ok = false;          // /mavros/local_position/odom is being published
+  double time_consistency_diff_s = 0.0;  // |stamp(slam) - stamp(local_odom)| in seconds
+  double time_consistency_max_s = 0.5;   // configured threshold (timestamps within 0.5 s)
 
   // Latch material:
   Eigen::Isometry3d first_aft_mapped{Eigen::Isometry3d::Identity()};  // T_odom_base at first msg

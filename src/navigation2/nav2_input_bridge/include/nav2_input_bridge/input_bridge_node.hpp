@@ -41,7 +41,7 @@ private:
   void onTargetDetected(const std_msgs::msg::Bool::SharedPtr msg);
   void publishStopGoal();
 
-  // ===== SLAM align path callbacks (Task 5 RED) =====
+  // ===== SLAM align path callbacks =====
   void onSlamOdom(const nav_msgs::msg::Odometry::SharedPtr msg);
   void onGpsRaw(const mavros_msgs::msg::GPSRAW::SharedPtr msg);
   void onLocalOdomAlign(const nav_msgs::msg::Odometry::SharedPtr msg);
