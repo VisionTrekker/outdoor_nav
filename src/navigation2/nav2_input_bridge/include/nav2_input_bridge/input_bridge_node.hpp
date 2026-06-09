@@ -7,6 +7,7 @@
 #include <string>
 
 #include <Eigen/Geometry>
+#include "geographic_msgs/msg/geo_point_stamped.hpp"
 #include "geometry_msgs/msg/pose_stamped.hpp"
 #include "mavros_msgs/msg/gpsraw.hpp"
 #include "nav_msgs/msg/odometry.hpp"
@@ -16,6 +17,7 @@
 #include "rclcpp_action/rclcpp_action.hpp"
 #include "sensor_msgs/msg/nav_sat_fix.hpp"
 #include "std_msgs/msg/bool.hpp"
+#include "std_msgs/msg/float32.hpp"
 #include "std_msgs/msg/string.hpp"
 #include "std_srvs/srv/trigger.hpp"
 #include "tf2_ros/transform_broadcaster.h"
@@ -48,6 +50,8 @@ private:
   void onRelatchService(
     const std::shared_ptr<std_srvs::srv::Trigger::Request> request,
     std::shared_ptr<std_srvs::srv::Trigger::Response> response);
+  void onCompassHdg(const std_msgs::msg::Float32::SharedPtr msg);
+  void onGpOrigin(const geographic_msgs::msg::GeoPointStamped::SharedPtr msg);
 
   void llaToEnu(
     double lat_deg, double lon_deg, double alt_m,
@@ -62,6 +66,8 @@ private:
   rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr vision_pose_pub_;
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr relatch_srv_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr align_state_pub_;
+  rclcpp::Subscription<std_msgs::msg::Float32>::SharedPtr compass_hdg_sub_;
+  rclcpp::Subscription<geographic_msgs::msg::GeoPointStamped>::SharedPtr gp_origin_sub_;
 
   // Cached latest inputs (filled by callbacks, consumed by align evaluation).
   AlignInputs cached_inputs_;

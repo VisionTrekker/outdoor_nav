@@ -2,6 +2,11 @@
 
 #include "nav2_input_bridge/input_bridge_node.hpp"
 
+// Unity-build include: link AlignStateMachine symbols into the same TU as
+// InputBridgeNode. CMakeLists.txt wires the .cpp only into the test targets,
+// so we pull the implementation in here to avoid changing the build config.
+#include "align_state_machine.cpp"  // NOLINT(build/include)
+
 #include <cmath>
 #include <algorithm>
 
@@ -23,6 +28,24 @@ InputBridgeNode::InputBridgeNode(const rclcpp::NodeOptions & options)
   require_goal_fix_ = declare_parameter("require_nav_sat_fix", true);
   goal_yaw_from_bearing_ = declare_parameter("goal_yaw_from_bearing", false);
   follow_path_action_topic_ = declare_parameter("follow_path_action_topic", std::string("/follow_path"));
+
+  // Align path parameters
+  this->declare_parameter("enable_slam_align", false);
+  this->declare_parameter("slam_odom_topic", "/aft_mapped_to_init");
+  this->declare_parameter("slam_vision_pose_topic", "/mavros/vision_pose/pose");
+  this->declare_parameter("gps_raw_topic", "/mavros/gpsstatus/gps1/raw");
+  this->declare_parameter("gps_quality.fix_type_min", 6);
+  this->declare_parameter("gps_quality.sat_min", 12);
+  this->declare_parameter("gps_quality.h_acc_max_mm", 500);
+  this->declare_parameter("ekf2.max_position_rmse", 0.5);
+  this->declare_parameter("ekf2.max_yaw_variance", 0.05);
+  this->declare_parameter("relatch.max_attempts", 3);
+  this->declare_parameter("relatch.interval_s", 5.0);
+  this->declare_parameter("relatch.off_yaw_threshold_rad", 0.2);
+  this->declare_parameter("fatal_timeout_s", 60.0);
+  this->declare_parameter("keep_publishing_on_mavros_death", true);
+  this->declare_parameter("auto_relatch_on_slam_die", false);
+  this->declare_parameter("slam_die_timeout_s", 30.0);
 
   const double ref_lat = declare_parameter("reference_latitude", 0.0);
   const double ref_lon = declare_parameter("reference_longitude", 0.0);
@@ -75,6 +98,54 @@ InputBridgeNode::InputBridgeNode(const rclcpp::NodeOptions & options)
   follow_path_action_client_ = rclcpp_action::create_client<FollowPath>(
     this,
     follow_path_action_topic_);
+
+  this->get_parameter("enable_slam_align", enable_slam_align_);
+  if (enable_slam_align_) {
+    this->get_parameter("slam_odom_topic", slam_odom_topic_);
+    this->get_parameter("slam_vision_pose_topic", slam_vision_pose_topic_);
+    this->get_parameter("gps_raw_topic", gps_raw_topic_);
+    this->get_parameter("gps_quality.fix_type_min", gps_fix_type_min_);
+    this->get_parameter("gps_quality.sat_min", gps_sat_min_);
+    this->get_parameter("gps_quality.h_acc_max_mm", gps_h_acc_max_mm_);
+    this->get_parameter("ekf2.max_position_rmse", ekf2_max_position_rmse_);
+    this->get_parameter("ekf2.max_yaw_variance", ekf2_max_yaw_variance_);
+    this->get_parameter("relatch.max_attempts", relatch_max_attempts_);
+    this->get_parameter("relatch.interval_s", relatch_interval_s_);
+    this->get_parameter("relatch.off_yaw_threshold_rad", relatch_off_yaw_threshold_rad_);
+    this->get_parameter("fatal_timeout_s", fatal_timeout_s_);
+    this->get_parameter("keep_publishing_on_mavros_death", keep_publishing_on_mavros_death_);
+    this->get_parameter("auto_relatch_on_slam_die", auto_relatch_on_slam_die_);
+    this->get_parameter("slam_die_timeout_s", slam_die_timeout_s_);
+
+    align_sm_ = std::make_unique<nav2_input_bridge::AlignStateMachine>();
+    state_start_time_ = this->get_clock()->now();
+
+    slam_odom_sub_ = this->create_subscription<nav_msgs::msg::Odometry>(
+      slam_odom_topic_, 10, std::bind(&InputBridgeNode::onSlamOdom, this, std::placeholders::_1));
+    gps_raw_sub_ = this->create_subscription<mavros_msgs::msg::GPSRAW>(
+      gps_raw_topic_, 10, std::bind(&InputBridgeNode::onGpsRaw, this, std::placeholders::_1));
+    local_odom_sub_ = this->create_subscription<nav_msgs::msg::Odometry>(
+      "/mavros/local_position/odom", 10,
+      std::bind(&InputBridgeNode::onLocalOdomAlign, this, std::placeholders::_1));
+    vision_pose_pub_ = this->create_publisher<geometry_msgs::msg::PoseStamped>(
+      slam_vision_pose_topic_, 10);
+    relatch_srv_ = this->create_service<std_srvs::srv::Trigger>(
+      "~/input_bridge/relatch",
+      std::bind(&InputBridgeNode::onRelatchService, this,
+                std::placeholders::_1, std::placeholders::_2));
+    align_state_pub_ = this->create_publisher<std_msgs::msg::String>("~/state", 10);
+
+    compass_hdg_sub_ = this->create_subscription<std_msgs::msg::Float32>(
+      "/mavros/global_position/compass_hdg", 10,
+      std::bind(&InputBridgeNode::onCompassHdg, this, std::placeholders::_1));
+    gp_origin_sub_ = this->create_subscription<geographic_msgs::msg::GeoPointStamped>(
+      "/mavros/global_position/gp_origin", 10,
+      std::bind(&InputBridgeNode::onGpOrigin, this, std::placeholders::_1));
+
+    align_eval_timer_ = this->create_wall_timer(
+      std::chrono::milliseconds(100),
+      std::bind(&InputBridgeNode::evaluateAlign, this));
+  }
 }
 
 void InputBridgeNode::onOdom(const nav_msgs::msg::Odometry::SharedPtr msg)
@@ -247,11 +318,25 @@ void InputBridgeNode::processGoalFix(
 void InputBridgeNode::onGoalFix(const sensor_msgs::msg::NavSatFix::SharedPtr msg)
 {
   processGoalFix(msg, "manual");
+  if (enable_slam_align_) {
+    std::lock_guard<std::mutex> lock(align_inputs_mutex_);
+    cached_inputs_.last_lat = msg->latitude;
+    cached_inputs_.last_lon = msg->longitude;
+    cached_inputs_.last_alt = msg->altitude;
+    cached_inputs_.mavros_global_valid = true;
+  }
 }
 
 void InputBridgeNode::onUavGoalFix(const sensor_msgs::msg::NavSatFix::SharedPtr msg)
 {
   processGoalFix(msg, "uav");
+  if (enable_slam_align_) {
+    std::lock_guard<std::mutex> lock(align_inputs_mutex_);
+    cached_inputs_.last_lat = msg->latitude;
+    cached_inputs_.last_lon = msg->longitude;
+    cached_inputs_.last_alt = msg->altitude;
+    cached_inputs_.mavros_global_valid = true;
+  }
 }
 
 // 发送取消导航任务指令
@@ -285,6 +370,191 @@ void InputBridgeNode::onTargetDetected(const std_msgs::msg::Bool::SharedPtr msg)
   }
 
   publishStopGoal();
+}
+
+// ===== SLAM align path =====
+
+void InputBridgeNode::onSlamOdom(const nav_msgs::msg::Odometry::SharedPtr msg)
+{
+  if (!enable_slam_align_) return;
+  std::lock_guard<std::mutex> lock(align_inputs_mutex_);
+  if (!cached_inputs_.aft_mapped_seen) {
+    cached_inputs_.first_aft_mapped = Eigen::Isometry3d::Identity();
+    cached_inputs_.first_aft_mapped.translation() =
+      Eigen::Vector3d(msg->pose.pose.position.x,
+                      msg->pose.pose.position.y,
+                      msg->pose.pose.position.z);
+    cached_inputs_.first_aft_mapped.linear() =
+      Eigen::Quaterniond(msg->pose.pose.orientation.w,
+                         msg->pose.pose.orientation.x,
+                         msg->pose.pose.orientation.y,
+                         msg->pose.pose.orientation.z).toRotationMatrix();
+  }
+  cached_inputs_.aft_mapped_seen = true;
+  slam_last_msg_time_ = this->get_clock()->now();
+
+  // If LATCHED, publish aligned pose immediately
+  if (align_sm_->state() == nav2_input_bridge::AlignState::LATCHED) {
+    publishAlignedPose(msg);
+  }
+}
+
+void InputBridgeNode::onGpsRaw(const mavros_msgs::msg::GPSRAW::SharedPtr msg)
+{
+  if (!enable_slam_align_) return;
+  std::lock_guard<std::mutex> lock(align_inputs_mutex_);
+  // Use satellites_visible (per docs/PX4_mavros_topic_info.md) — not status.satellites_used
+  cached_inputs_.gps_quality_ok =
+    (msg->fix_type >= static_cast<uint8_t>(gps_fix_type_min_)) &&
+    (msg->satellites_visible >= static_cast<uint8_t>(gps_sat_min_)) &&
+    (msg->h_acc <= static_cast<uint32_t>(gps_h_acc_max_mm_));
+}
+
+void InputBridgeNode::onLocalOdomAlign(const nav_msgs::msg::Odometry::SharedPtr msg)
+{
+  if (!enable_slam_align_) return;
+  std::lock_guard<std::mutex> lock(align_inputs_mutex_);
+  const auto & c = msg->pose.covariance;  // 36-element row-major 6x6
+  double pos_trace = c[0] + c[7] + c[14];
+  double yaw_var = c[35];
+  cached_inputs_.ekf2_cov_low =
+    (std::sqrt(pos_trace) <= ekf2_max_position_rmse_) &&
+    (yaw_var <= ekf2_max_yaw_variance_);
+  cached_inputs_.ekf2_state_ok = true;  // local_odom arriving means EKF2 is publishing
+}
+
+void InputBridgeNode::evaluateAlign()
+{
+  if (!enable_slam_align_ || !align_sm_) return;
+
+  AlignInputs snap;
+  bool have_yaw_for_latch = false;
+
+  {
+    std::lock_guard<std::mutex> lock(align_inputs_mutex_);
+    snap = cached_inputs_;
+
+    // Construct T_ENU_base_latch from latest mavros global + heading
+    if (snap.mavros_global_valid && snap.mavros_heading_valid) {
+      double x_e = 0, y_n = 0, z_u = 0;
+      std::lock_guard<std::mutex> olock(origin_mutex_);
+      if (origin_valid_) {
+        this->llaToEnu(
+          snap.last_lat, snap.last_lon, snap.last_alt,
+          origin_lat_, origin_lon_, origin_alt_,
+          &x_e, &y_n, &z_u);
+        Eigen::Isometry3d T_ENU_base_snap = Eigen::Isometry3d::Identity();
+        T_ENU_base_snap.translation() = Eigen::Vector3d(x_e, y_n, z_u);
+        // compass_hdg is DEGREES [0, 360) — must deg2rad
+        T_ENU_base_snap.linear() =
+          Eigen::AngleAxisd(snap.last_compass_hdg_deg * M_PI / 180.0,
+                            Eigen::Vector3d::UnitZ()).toRotationMatrix();
+        snap.T_ENU_base_latch = T_ENU_base_snap;
+        have_yaw_for_latch = true;
+      }
+    }
+  }
+
+  // FATAL timeout: count time in WAITING_DATA/RELATCHING, transition to FATAL after 60s
+  if (align_sm_->state() == nav2_input_bridge::AlignState::WAITING_DATA ||
+      align_sm_->state() == nav2_input_bridge::AlignState::RELATCHING) {
+    align_sm_->addFatalElapsedS(0.1);
+    if (align_sm_->fatalElapsedS() >= fatal_timeout_s_) {
+      // Force FATAL by repeated relatch until attempts>3
+      while (align_sm_->state() != nav2_input_bridge::AlignState::FATAL) {
+        align_sm_->update(snap);
+      }
+    }
+  }
+
+  // Drive state machine
+  const AlignState prev_state = align_sm_->state();
+  align_sm_->update(snap);
+
+  // Publish state for monitoring
+  if (align_sm_->state() != prev_state && align_state_pub_) {
+    std_msgs::msg::String s;
+    switch (align_sm_->state()) {
+      case nav2_input_bridge::AlignState::INIT: s.data = "INIT"; break;
+      case nav2_input_bridge::AlignState::WAITING_DATA: s.data = "WAITING_DATA"; break;
+      case nav2_input_bridge::AlignState::READY_TO_LATCH: s.data = "READY_TO_LATCH"; break;
+      case nav2_input_bridge::AlignState::LATCHED: s.data = "LATCHED"; break;
+      case nav2_input_bridge::AlignState::RELATCHING: s.data = "RELATCHING"; break;
+      case nav2_input_bridge::AlignState::FATAL: s.data = "FATAL"; break;
+    }
+    align_state_pub_->publish(s);
+  }
+
+  if (align_sm_->state() == nav2_input_bridge::AlignState::LATCHED) {
+    RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 60000,
+      "LATCH COMPLETE: yaw_offset=%.4f rad (%.2f deg), off_yaw=%.4f rad, T_ENU_odom.t=[%.3f, %.3f, %.3f]",
+      align_sm_->lastYawOffset(),
+      align_sm_->lastYawOffset() * 180.0 / M_PI,
+      align_sm_->lastOffYaw(),
+      align_sm_->latchedOffset().translation().x(),
+      align_sm_->latchedOffset().translation().y(),
+      align_sm_->latchedOffset().translation().z());
+  }
+}
+
+void InputBridgeNode::publishAlignedPose(const nav_msgs::msg::Odometry::SharedPtr & odom_msg)
+{
+  if (!align_sm_ || !vision_pose_pub_) return;
+  Eigen::Isometry3d T_odom_base = Eigen::Isometry3d::Identity();
+  T_odom_base.translation() =
+    Eigen::Vector3d(odom_msg->pose.pose.position.x,
+                    odom_msg->pose.pose.position.y,
+                    odom_msg->pose.pose.position.z);
+  T_odom_base.linear() =
+    Eigen::Quaterniond(odom_msg->pose.pose.orientation.w,
+                       odom_msg->pose.pose.orientation.x,
+                       odom_msg->pose.pose.orientation.y,
+                       odom_msg->pose.pose.orientation.z).toRotationMatrix();
+
+  Eigen::Isometry3d T_ENU_base = align_sm_->applyOffset(T_odom_base);
+  if (T_ENU_base.isApprox(Eigen::Isometry3d::Identity(), 1e-9)) return;
+
+  geometry_msgs::msg::PoseStamped out;
+  out.header.stamp = odom_msg->header.stamp;
+  out.header.frame_id = "map";
+  out.pose.position.x = T_ENU_base.translation().x();
+  out.pose.position.y = T_ENU_base.translation().y();
+  out.pose.position.z = T_ENU_base.translation().z();
+  Eigen::Quaterniond q(T_ENU_base.linear());
+  out.pose.orientation.x = q.x();
+  out.pose.orientation.y = q.y();
+  out.pose.orientation.z = q.z();
+  out.pose.orientation.w = q.w();
+  vision_pose_pub_->publish(out);
+}
+
+void InputBridgeNode::onRelatchService(
+  const std::shared_ptr<std_srvs::srv::Trigger::Request>,
+  std::shared_ptr<std_srvs::srv::Trigger::Response> response)
+{
+  if (!align_sm_) {
+    response->success = false;
+    response->message = "align not enabled";
+    return;
+  }
+  align_sm_->requestRelatch();
+  response->success = true;
+  response->message = "relatch requested";
+}
+
+void InputBridgeNode::onCompassHdg(const std_msgs::msg::Float32::SharedPtr msg)
+{
+  if (!enable_slam_align_) return;
+  std::lock_guard<std::mutex> lock(align_inputs_mutex_);
+  cached_inputs_.last_compass_hdg_deg = msg->data;
+  cached_inputs_.mavros_heading_valid = true;
+}
+
+void InputBridgeNode::onGpOrigin(const geographic_msgs::msg::GeoPointStamped::SharedPtr /*msg*/)
+{
+  if (!enable_slam_align_) return;
+  std::lock_guard<std::mutex> lock(align_inputs_mutex_);
+  cached_inputs_.gp_origin_verified = true;
 }
 
 }  // namespace nav2_input_bridge
