@@ -61,8 +61,19 @@ struct AlignInputs {
 
 class AlignStateMachine {
 public:
-  // 构造函数：默认状态为 INIT，偏移量为单位阵
+  // 状态机可配置项。默认 0s 间隔 + 3 次尝试 + 0.2 rad 阈值，向后兼容原行为。
+  struct Config {
+    int relatch_max_attempts = 3;                // 重锁存上限；超此值进 FATAL
+    double relatch_off_yaw_threshold_rad = 0.2;  // off_yaw 阈值；超此值进入 RELATCHING
+    double relatch_interval_s = 0.0;             // RELATCHING 状态最小停留秒数
+                                                // 0 = 立即重试（向后兼容）；>0 = 等待 ticks
+  };
+
+  // 默认构造：使用 Config{} 默认值（max_attempts=3, threshold=0.2, interval=0s）。
   AlignStateMachine();
+
+  // 配置构造：调用方注入自定义参数。InputBridgeNode 在读 yaml 后用此构造。
+  explicit AlignStateMachine(const Config &cfg);
 
   // 静态数学工具：给定锁存瞬间的 T_ENU_base 与 T_odom_base，计算 T_ENU_odom = T_ENU_base · T_odom_base⁻¹
   // 即把 SLAM 局部 odom 坐标系对齐到 ENU (map) 坐标系下。
@@ -76,10 +87,15 @@ public:
   // 状态机主入口：注入一帧 AlignInputs 快照。
   //   - 在 WAITING_DATA 时检查 allInputsReady()，满足则跳到 READY_TO_LATCH；
   //   - 在 READY_TO_LATCH 时调 latchFromInputs() 锁存，按 off_yaw 阈值决定走向 LATCHED 还是 RELATCHING；
-  //   - 在 RELATCHING 时累计 attempts>3 后跳 FATAL，否则回到 WAITING_DATA；
+  //   - 在 RELATCHING 时若未到 relatch_interval_s 则保持原状，否则 attempts++，
+  //     超 max_attempts 跳 FATAL，否则回到 WAITING_DATA；
   //   - LATCHED / FATAL 为稳态，需要 requestRelatch() 才能跳出。
   // 返回：本次调用是否发生了状态迁移（便于上层发布 ~/state topic）。
   [[nodiscard]] bool update(const AlignInputs &inputs);
+
+  // 推进内部时钟（秒）。由 InputBridgeNode::evaluateAlign() 每 100ms 调一次。
+  //   用途：驱动 relatch_interval_s 等待窗口的判定（避免依赖 rclcpp 以保持可单测性）。
+  void tick(double dt);
 
   // 强制重锁存：服务 ~/input_bridge/relatch 调用。
   //   仅当 LATCHED 或 FATAL 时才生效，跳到 RELATCHING 并清零 attempts。
@@ -113,6 +129,7 @@ private:
   // 用 first_aft_mapped + T_ENU_base_latch 计算并锁存 T_ENU_odom_
   void latchFromInputs(const AlignInputs &i);
 
+  Config config_;                              // 状态机配置（不可变，单写多读）
   AlignState state_ = AlignState::INIT;
   Eigen::Isometry3d T_ENU_odom_ = Eigen::Isometry3d::Identity(); // 锁存后的偏移量
   bool latched_ = false;        // 是否处于 LATCHED
@@ -120,6 +137,8 @@ private:
   double fatal_elapsed_s_ = 0.0; // 等待/重锁存阶段累计时间
   double last_off_yaw_ = 0.0;    // 最近一次 off_yaw（监控用）
   double last_yaw_offset_ = 0.0; // 最近一次 yaw_offset（监控用）
+  double elapsed_s_ = 0.0;       // tick() 累计的内部时钟（驱动 interval gate）
+  double relatch_enter_elapsed_s_ = 0.0; // 进入 RELATCHING 时的 elapsed_s_ 快照
 };
 
 } // namespace nav2_input_bridge

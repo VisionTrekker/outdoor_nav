@@ -39,9 +39,6 @@ InputBridgeNode::InputBridgeNode(const rclcpp::NodeOptions &options)
   this->declare_parameter("relatch.interval_s", 5.0);
   this->declare_parameter("relatch.off_yaw_threshold_rad", 0.2);
   this->declare_parameter("fatal_timeout_s", 60.0);
-  this->declare_parameter("keep_publishing_on_mavros_death", true);
-  this->declare_parameter("auto_relatch_on_slam_die", false);
-  this->declare_parameter("slam_die_timeout_s", 30.0);
 
   const double ref_lat = declare_parameter("reference_latitude", 0.0);
   const double ref_lon = declare_parameter("reference_longitude", 0.0);
@@ -105,12 +102,13 @@ InputBridgeNode::InputBridgeNode(const rclcpp::NodeOptions &options)
     this->get_parameter("relatch.interval_s", relatch_interval_s_);
     this->get_parameter("relatch.off_yaw_threshold_rad", relatch_off_yaw_threshold_rad_);
     this->get_parameter("fatal_timeout_s", fatal_timeout_s_);
-    this->get_parameter("keep_publishing_on_mavros_death", keep_publishing_on_mavros_death_);
-    this->get_parameter("auto_relatch_on_slam_die", auto_relatch_on_slam_die_);
-    this->get_parameter("slam_die_timeout_s", slam_die_timeout_s_);
 
-    align_sm_ = std::make_unique<nav2_input_bridge::AlignStateMachine>();
-    state_start_time_ = this->get_clock()->now();
+    // 构造状态机配置（off_yaw 阈值、relatch 上限、间隔）
+    AlignStateMachine::Config sm_cfg;
+    sm_cfg.relatch_max_attempts = relatch_max_attempts_;
+    sm_cfg.relatch_interval_s = relatch_interval_s_;
+    sm_cfg.relatch_off_yaw_threshold_rad = relatch_off_yaw_threshold_rad_;
+    align_sm_ = std::make_unique<nav2_input_bridge::AlignStateMachine>(sm_cfg);
 
     slam_odom_sub_ = this->create_subscription<nav_msgs::msg::Odometry>(
       slam_odom_topic_, 10, std::bind(&InputBridgeNode::onSlamOdom, this, std::placeholders::_1));
@@ -498,6 +496,10 @@ void InputBridgeNode::onLocalOdomAlign(const nav_msgs::msg::Odometry::SharedPtr 
 void InputBridgeNode::evaluateAlign() {
   if (!enable_slam_align_ || !align_sm_)
     return;
+
+  // 推进状态机内部时钟 (100ms 拍)。驱动 relatch_interval_s 间隔门，
+  //   不依赖 rclcpp::Time 以保持 AlignStateMachine 可单测性。
+  align_sm_->tick(0.1);
 
   AlignInputs snap;
 

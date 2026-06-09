@@ -47,16 +47,10 @@ def generate_launch_description():
         default_value="true",
         description="Enable SLAM vision pose alignment in input_bridge_node.",
     )
-    declare_slam_die_timeout_s = DeclareLaunchArgument(
-        "slam_die_timeout_s",
-        default_value="30.0",
-        description="SLAM silent timeout before auto-relatch (only used if auto_relatch_on_slam_die=true).",
-    )
 
     fcu_url = LaunchConfiguration("fcu_url")
     use_auto_origin = LaunchConfiguration("use_auto_origin")
     enable_slam_align = LaunchConfiguration("enable_slam_align")
-    slam_die_timeout_s = LaunchConfiguration("slam_die_timeout_s")
 
     car_driver_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
@@ -80,7 +74,6 @@ def generate_launch_description():
         PythonLaunchDescriptionSource(nav2_launch_file),
         launch_arguments={
             "enable_slam_align": enable_slam_align,
-            "slam_die_timeout_s": slam_die_timeout_s,
         }.items(),
     )
 
@@ -108,7 +101,6 @@ def generate_launch_description():
             declare_use_auto_origin,
             declare_fcu_url,
             declare_enable_slam_align,
-            declare_slam_die_timeout_s,
             car_driver_launch,
             mavros_launch,
             nav2_launch,

@@ -50,15 +50,9 @@ def generate_launch_description():
         default_value="true",
         description="Enable SLAM vision pose alignment in input_bridge_node.",
     )
-    declare_slam_die_timeout_s = DeclareLaunchArgument(
-        "slam_die_timeout_s",
-        default_value="30.0",
-        description="SLAM silent timeout before auto-relatch (only used if auto_relatch_on_slam_die=true).",
-    )
 
     params_file = LaunchConfiguration("params_file")
     enable_slam_align = LaunchConfiguration("enable_slam_align")
-    slam_die_timeout_s = LaunchConfiguration("slam_die_timeout_s")
     use_sim_time = ParameterValue(LaunchConfiguration("use_sim_time"), value_type=bool)
     rviz_config = LaunchConfiguration("rviz_config")
     use_rviz = LaunchConfiguration("use_rviz")
@@ -99,7 +93,6 @@ def generate_launch_description():
             sim_time_param,
             {
                 "enable_slam_align": enable_slam_align,
-                "slam_die_timeout_s": slam_die_timeout_s,
             },
         ],
     )
@@ -147,7 +140,6 @@ def generate_launch_description():
             declare_use_rviz,
             declare_use_mid360,
             declare_enable_slam_align,
-            declare_slam_die_timeout_s,
             mid360_driver,
             static_tf_base_lidar,
             static_tf_map_odom,

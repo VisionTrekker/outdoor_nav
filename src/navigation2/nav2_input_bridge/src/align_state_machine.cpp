@@ -6,7 +6,15 @@
 namespace nav2_input_bridge {
 
 // 默认构造：state_ 走 AlignState::INIT 初始值，下一次 update() 自动转 WAITING_DATA。
+//   配置走 Config{} 默认值（max_attempts=3, threshold=0.2 rad, interval=0s）。
 AlignStateMachine::AlignStateMachine() = default;
+
+// 配置构造：调用方注入 Config；其余成员走默认初始化。
+AlignStateMachine::AlignStateMachine(const Config &cfg) : config_(cfg) {}
+
+// 推进内部时钟。仅累加 elapsed_s_，不触发任何状态迁移。
+//   间隔门 (relatch_interval_s) 在 update() 内根据 elapsed_s_ 差值判定。
+void AlignStateMachine::tick(double dt) { elapsed_s_ += dt; }
 
 // 计算 T_ENU_odom 偏移量。
 //   推导：已知锁存瞬间的 T_ENU_base（base 在 ENU 下）和 T_odom_base（base 在 odom 下），
@@ -69,16 +77,20 @@ void AlignStateMachine::latchFromInputs(const AlignInputs &i) {
 // 状态迁移图：
 //   INIT ──► WAITING_DATA ──（allReady）──► READY_TO_LATCH
 //                                              │
-//                                              ├─ off_yaw ≤ 0.2 ──► LATCHED  (稳态)
+//                                              ├─ off_yaw ≤ threshold ─► LATCHED  (稳态)
 //                                              │
-//                                              └─ off_yaw  > 0.2 ──► RELATCHING
-//                                                                      │
-//                                                  attempts++ > 3 ────┴─► FATAL
+//                                              └─ off_yaw  > threshold ─► RELATCHING
+//                                                                       │
+//                                                  attempts++ > max ───┴─► FATAL
+//
+// RELATCHING 状态额外受 interval_s 门控：自进入 RELATCHING 以来
+//   tick 累计时间 < relatch_interval_s 时保持原态，避免 100ms 定时器内
+//   立即重试造成反复锁存失败。interval_s=0 时 (默认) 立即放行。
 //
 // 计数器语义：
 //   relatch_attempts_ 在 READY_TO_LATCH 和 RELATCHING 两处均 += 1，
 //   也就是说一次完整的"重锁存循环"会让计数 +2。
-//   实测 relatch_max_attempts_=3 时，约 2 次外部触发即到 FATAL 上限，
+//   实测 max_attempts=3 时，约 2 次外部触发即到 FATAL 上限，
 //   这是经过单测验证的故意行为，不要在 RELATCHING 中重置计数。
 bool AlignStateMachine::update(const AlignInputs &i) {
   const AlignState prev = state_;
@@ -100,10 +112,11 @@ bool AlignStateMachine::update(const AlignInputs &i) {
     // 计算并锁存 T_ENU_odom_，清零 fatal 计时
     latchFromInputs(i);
     resetFatalElapsedS();
-    if (last_off_yaw_ > 0.2) {
+    if (last_off_yaw_ > config_.relatch_off_yaw_threshold_rad) {
       // 锁存结果带明显 pitch/roll 偏差 → 视为"坏锁存"，进入重锁存流程
       state_ = AlignState::RELATCHING;
       relatch_attempts_ += 1; // 累加，不重置
+      relatch_enter_elapsed_s_ = elapsed_s_; // 记录进入时刻，用于 interval gate
     } else {
       // 锁存结果在水平面附近 → 进入稳态 LATCHED
       state_ = AlignState::LATCHED;
@@ -115,9 +128,14 @@ bool AlignStateMachine::update(const AlignInputs &i) {
     break;
 
   case AlignState::RELATCHING:
-    // 由 InputBridgeNode 在 sleep 5s 后重新调 update() 进入此分支
+    // 间隔门：自进入 RELATCHING 以来累计 ticks < relatch_interval_s 时保持原态，
+    //   避免 100ms 定时器内立刻重试造成"雪崩式"反复锁存失败。
+    //   interval_s=0 时 (默认) 立即放行，保持向后兼容。
+    if ((elapsed_s_ - relatch_enter_elapsed_s_) < config_.relatch_interval_s) {
+      break;
+    }
     relatch_attempts_++;
-    if (relatch_attempts_ > 3) {
+    if (relatch_attempts_ > config_.relatch_max_attempts) {
       // 超过重锁存上限 → 进入致命态
       state_ = AlignState::FATAL;
     } else {

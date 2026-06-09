@@ -135,4 +135,3 @@ nav2_input_bridge:
     goal_yaw_from_bearing: false
     # FAST-LIVO2 <-> mavros frame-align params (Task7)
     enable_slam_align: true
-    slam_die_timeout_s: 30.0

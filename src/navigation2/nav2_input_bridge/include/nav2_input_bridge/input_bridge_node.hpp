@@ -109,16 +109,12 @@ private:
   int gps_h_acc_max_mm_ = 500;                  // 最大水平精度（mm）
   double ekf2_max_position_rmse_ = 0.5;         // EKF2 位置 RMSE 阈值（m）
   double ekf2_max_yaw_variance_ = 0.05;         // EKF2 yaw 方差上限（rad²）
-  int relatch_max_attempts_ = 3;                // 重锁存最大次数
-  double relatch_interval_s_ = 5.0;             // 重锁存间隔（s）
-  double relatch_off_yaw_threshold_rad_ = 0.2;  // off_yaw 阈值（rad）
-  double fatal_timeout_s_ = 60.0;               // FATAL 超时（s）
-  bool keep_publishing_on_mavros_death_ = true; // mavros 失联后是否保持发布
-  bool auto_relatch_on_slam_die_ = false;       // SLAM 失联后是否自动重锁存
-  double slam_die_timeout_s_ = 30.0;            // SLAM 失联判定时长（s）
+  int relatch_max_attempts_ = 3;                // 重锁存最大次数（注入 align_sm_ Config）
+  double relatch_interval_s_ = 5.0;             // 重锁存最小间隔（s, 注入 Config）
+  double relatch_off_yaw_threshold_rad_ = 0.2;  // off_yaw 阈值（rad, 注入 Config）
+  double fatal_timeout_s_ = 60.0;               // FATAL 超时（s, 父节点用)
   rclcpp::Time slam_last_msg_time_;             // SLAM 最近一帧时间戳
   rclcpp::Time local_odom_last_msg_time_;       // local_odom 最近一帧时间戳（用于 DC-8）
-  rclcpp::Time state_start_time_;               // 状态机进入当前态时间
 
   // 目标点路径相关参数
   std::string local_odom_topic_;         // 默认 /mavros/local_position/odom

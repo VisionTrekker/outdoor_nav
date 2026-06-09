@@ -130,3 +130,90 @@ TEST(AlignSM, apply_offset_unlatched_returns_identity) {
   Eigen::Isometry3d r = sm.applyOffset(t);
   EXPECT_TRUE(r.isApprox(Eigen::Isometry3d::Identity(), 1e-9));
 }
+
+// Test 10: configurable off_yaw threshold accepts a rotation that the
+// default 0.2 rad threshold would reject.
+//   R(0.4 X) has off_yaw ≈ 0.397 — rejected by default (0.2) but accepted
+//   when threshold is raised to 0.5.
+TEST(AlignSM, latch_with_custom_off_yaw_threshold_allows_small_latch) {
+  nav2_input_bridge::AlignStateMachine::Config cfg;
+  cfg.relatch_off_yaw_threshold_rad = 0.5;
+  AlignStateMachine sm(cfg);
+  AlignInputs i = allReady();
+  i.T_ENU_base_latch.linear() =
+    Eigen::AngleAxisd(0.4, Eigen::Vector3d::UnitX()).toRotationMatrix();
+  sm.update(i); // → WAITING_DATA
+  sm.update(i); // → READY_TO_LATCH
+  sm.update(i); // → LATCHED (off_yaw≈0.397 < cfg threshold 0.5)
+  EXPECT_EQ(sm.state(), AlignState::LATCHED);
+  EXPECT_GT(sm.lastOffYaw(), 0.2); // 实际值仍 > 默认阈值 (0.2)
+  EXPECT_LT(sm.lastOffYaw(), 0.5); // 但 < 自定义阈值 (0.5)
+}
+
+// Test 11: configurable off_yaw threshold rejects when over the limit.
+//   R(0.6 X) has off_yaw ≈ 0.591 — also rejected by the new threshold 0.5.
+TEST(AlignSM, latch_with_custom_off_yaw_threshold_rejects_large_latch) {
+  nav2_input_bridge::AlignStateMachine::Config cfg;
+  cfg.relatch_off_yaw_threshold_rad = 0.5;
+  AlignStateMachine sm(cfg);
+  AlignInputs i = allReady();
+  i.T_ENU_base_latch.linear() =
+    Eigen::AngleAxisd(0.6, Eigen::Vector3d::UnitX()).toRotationMatrix();
+  sm.update(i); // → WAITING_DATA
+  sm.update(i); // → READY_TO_LATCH
+  sm.update(i); // → RELATCHING (off_yaw≈0.591 > cfg threshold 0.5)
+  EXPECT_EQ(sm.state(), AlignState::RELATCHING);
+  EXPECT_EQ(sm.relatchAttempts(), 1);
+}
+
+// Test 12: configurable max_attempts reaches FATAL sooner.
+//   max_attempts=2 means after 2 full relatch cycles (counter reaches 4 in the
+//   READY-then-RELATCHING-then-update transition pattern), state goes FATAL.
+TEST(AlignSM, relatch_max_attempts_two_goes_fatal) {
+  nav2_input_bridge::AlignStateMachine::Config cfg;
+  cfg.relatch_max_attempts = 2;
+  AlignStateMachine sm(cfg);
+  AlignInputs i = allReady();
+  i.T_ENU_base_latch.linear() =
+    Eigen::AngleAxisd(M_PI / 4, Eigen::Vector3d::UnitX()).toRotationMatrix();
+  // 7 步 trace:
+  //   u0: INIT→WAIT
+  //   u1: WAIT→READY
+  //   u2: READY→RELATCHING (attempts=1, enter=0)
+  //   u3: RELATCHING interval gate (0<0 false) → 放行; attempts=2, 2>2 false → WAIT
+  //   u4: WAIT→READY
+  //   u5: READY→RELATCHING (attempts=3, enter=0)
+  //   u6: RELATCHING: attempts=4, 4>2 true → FATAL
+  for (int n = 0; n < 7; ++n) {
+    sm.update(i);
+  }
+  EXPECT_EQ(sm.state(), AlignState::FATAL);
+  EXPECT_GE(sm.relatchAttempts(), 3);
+}
+
+// Test 13: relatch_interval_s blocks update() during the wait window.
+//   interval_s=5: after entering RELATCHING, update() with <5s of ticked
+//   time must NOT advance; only after 5s ticked can it proceed.
+TEST(AlignSM, relatch_interval_blocks_update_during_wait) {
+  nav2_input_bridge::AlignStateMachine::Config cfg;
+  cfg.relatch_interval_s = 5.0;
+  AlignStateMachine sm(cfg);
+  AlignInputs i = allReady();
+  i.T_ENU_base_latch.linear() =
+    Eigen::AngleAxisd(M_PI / 4, Eigen::Vector3d::UnitX()).toRotationMatrix();
+  sm.update(i); // → WAITING_DATA
+  sm.update(i); // → READY_TO_LATCH
+  sm.update(i); // → RELATCHING (entry timestamp recorded)
+  EXPECT_EQ(sm.state(), AlignState::RELATCHING);
+  // 在 5s 等待窗内连续 tick + update: 必须保持 RELATCHING
+  for (int n = 0; n < 4; ++n) {
+    sm.tick(1.0);  // 共推进 4s
+    sm.update(i);
+    EXPECT_EQ(sm.state(), AlignState::RELATCHING)
+      << "tick #" << (n + 1) << " (累计 " << (n + 1) << "s): 不应前进";
+  }
+  // 跨过 5s 阈值后再 tick + update: 应前进到 WAITING_DATA (默认 max_attempts=3)
+  sm.tick(2.0);  // 累计 6s
+  sm.update(i);
+  EXPECT_EQ(sm.state(), AlignState::WAITING_DATA);
+}
