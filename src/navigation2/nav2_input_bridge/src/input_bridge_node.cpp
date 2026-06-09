@@ -430,14 +430,16 @@ void InputBridgeNode::onSlamOdom(const nav_msgs::msg::Odometry::SharedPtr msg) {
   slam_last_msg_time_ = this->get_clock()->now();
 
   // 修复时间戳差：
-  //   msg->header.stamp 是 SLAM 上游时间戳，
-  //   local_odom_last_msg_time_ 是 /mavros/local_position/odom 最近帧时间。
-  //   两者 |diff| <= 0.5s 才认为时间一致（stamp 时间域可能不同：用 nanoseconds 换算到秒）。
-  //   首次未收到 local_odom 时，时间差不更新，保留默认 0.0（0 <= 0.5，gate 暂时放行）。
+  //   slam_stamp（msg->header.stamp）— SLAM 上游发布时间。
+  //   local_odom_last_msg_time_ — /mavros/local_position/odom 最近一帧的上游发布时间。
+  //   两者均在 ROS 2 系统时钟域内（同 use_sim_time 配置下）才可比，|diff| <= 0.5s 视为一致。
+  //   首次未收到 local_odom 时（默认 epoch 0），跳过计算，保留默认 0.0 暂时放行 gate。
   {
-    const rclcpp::Time slam_stamp(msg->header.stamp);
-    const double diff_s = std::fabs((slam_stamp - local_odom_last_msg_time_).seconds());
-    cached_inputs_.time_consistency_diff_s = diff_s;
+    if (local_odom_last_msg_time_.nanoseconds() != 0) {
+      const rclcpp::Time slam_stamp(msg->header.stamp);
+      const double diff_s = std::fabs((slam_stamp - local_odom_last_msg_time_).seconds());
+      cached_inputs_.time_consistency_diff_s = diff_s;
+    }
   }
 
   // 已 LATCHED 时实时发布对齐后位姿
@@ -481,8 +483,11 @@ void InputBridgeNode::onLocalOdomAlign(const nav_msgs::msg::Odometry::SharedPtr 
   cached_inputs_.ekf2_cov_low =
     (std::sqrt(pos_trace) <= ekf2_max_position_rmse_) && (yaw_var <= ekf2_max_yaw_variance_);
   cached_inputs_.ekf2_state_ok = true; // 收到任一帧即认为 EKF2 在发布
-  // local_odom_last_msg_time_ 由 onSlamOdom 读取并算时间戳差
-  local_odom_last_msg_time_ = this->get_clock()->now();
+  // local_odom_last_msg_time_ 由 onSlamOdom 读取并算时间戳差。
+  //   用 msg->header.stamp（mavros 内部 LOCAL_POSITION_NED → now() 转换），
+  //   不用 this->get_clock()->now()（接收时刻，含回调排队 + 处理延迟），
+  //   以保证和 SLAM 端 header.stamp 在同一时间域内可比。
+  local_odom_last_msg_time_ = msg->header.stamp;
 }
 
 // 状态机评估（100ms 定时器回调）。
