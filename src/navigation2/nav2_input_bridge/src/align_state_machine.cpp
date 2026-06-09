@@ -35,7 +35,16 @@ void AlignStateMachine::latchFromInputs(const AlignInputs & i)
   T_ENU_odom_ = computeOffset(i.T_ENU_base_latch, i.first_aft_mapped);
   // Extract scalars for monitoring.
   last_yaw_offset_ = atan2(T_ENU_odom_.linear()(1, 0), T_ENU_odom_.linear()(0, 0));
-  last_off_yaw_ = std::fabs(T_ENU_odom_.linear()(0, 1) + T_ENU_odom_.linear()(1, 0)) / 2.0;
+  // Off-yaw = deviation of the Z-axis column from unit Z, in [0, sqrt(2)].
+  // Catches pitch and roll. Pure yaw leaves Z unchanged.
+  // Catches X/Y rotation: R(0,2)=0, R(1,2)=-sin(θ), R(2,2)=cos(θ).
+  //   R(π/4 X): norm((0, -0.707, -0.293)) ≈ 0.766 > 0.2 → RELATCHING
+  //   R(0.01 Z): norm((0.01, 0, -5e-5)) ≈ 0.01 < 0.2 → LATCHED
+  //   Identity: 0 < 0.2 → LATCHED
+  last_off_yaw_ = std::sqrt(
+    T_ENU_odom_.linear()(0, 2) * T_ENU_odom_.linear()(0, 2) +
+    T_ENU_odom_.linear()(1, 2) * T_ENU_odom_.linear()(1, 2) +
+    (T_ENU_odom_.linear()(2, 2) - 1.0) * (T_ENU_odom_.linear()(2, 2) - 1.0));
   latched_ = true;
 }
 
