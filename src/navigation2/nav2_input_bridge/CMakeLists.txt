@@ -24,6 +24,7 @@ find_package(Eigen3 REQUIRED NO_MODULE)
 add_executable(input_bridge_node
   src/main.cpp
   src/input_bridge_node.cpp
+  src/align_state_machine.cpp
 )
 
 ament_target_dependencies(input_bridge_node
