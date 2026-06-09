@@ -2,11 +2,6 @@
 
 #include "nav2_input_bridge/input_bridge_node.hpp"
 
-// Unity-build include: link AlignStateMachine symbols into the same TU as
-// InputBridgeNode. CMakeLists.txt wires the .cpp only into the test targets,
-// so we pull the implementation in here to avoid changing the build config.
-#include "align_state_machine.cpp"  // NOLINT(build/include)
-
 #include <cmath>
 #include <algorithm>
 
@@ -318,25 +313,36 @@ void InputBridgeNode::processGoalFix(
 void InputBridgeNode::onGoalFix(const sensor_msgs::msg::NavSatFix::SharedPtr msg)
 {
   processGoalFix(msg, "manual");
-  if (enable_slam_align_) {
-    std::lock_guard<std::mutex> lock(align_inputs_mutex_);
-    cached_inputs_.last_lat = msg->latitude;
-    cached_inputs_.last_lon = msg->longitude;
-    cached_inputs_.last_alt = msg->altitude;
-    cached_inputs_.mavros_global_valid = true;
+  if (!enable_slam_align_) return;
+  // Only cache align input if the fix is usable (not NO_FIX) and values are finite.
+  if (msg->status.status == sensor_msgs::msg::NavSatStatus::STATUS_NO_FIX ||
+      !std::isfinite(msg->latitude) || !std::isfinite(msg->longitude) ||
+      !std::isfinite(msg->altitude))
+  {
+    return;
   }
+  std::lock_guard<std::mutex> lock(align_inputs_mutex_);
+  cached_inputs_.last_lat = msg->latitude;
+  cached_inputs_.last_lon = msg->longitude;
+  cached_inputs_.last_alt = msg->altitude;
+  cached_inputs_.mavros_global_valid = true;
 }
 
 void InputBridgeNode::onUavGoalFix(const sensor_msgs::msg::NavSatFix::SharedPtr msg)
 {
   processGoalFix(msg, "uav");
-  if (enable_slam_align_) {
-    std::lock_guard<std::mutex> lock(align_inputs_mutex_);
-    cached_inputs_.last_lat = msg->latitude;
-    cached_inputs_.last_lon = msg->longitude;
-    cached_inputs_.last_alt = msg->altitude;
-    cached_inputs_.mavros_global_valid = true;
+  if (!enable_slam_align_) return;
+  if (msg->status.status == sensor_msgs::msg::NavSatStatus::STATUS_NO_FIX ||
+      !std::isfinite(msg->latitude) || !std::isfinite(msg->longitude) ||
+      !std::isfinite(msg->altitude))
+  {
+    return;
   }
+  std::lock_guard<std::mutex> lock(align_inputs_mutex_);
+  cached_inputs_.last_lat = msg->latitude;
+  cached_inputs_.last_lon = msg->longitude;
+  cached_inputs_.last_alt = msg->altitude;
+  cached_inputs_.mavros_global_valid = true;
 }
 
 // 发送取消导航任务指令
@@ -377,6 +383,35 @@ void InputBridgeNode::onTargetDetected(const std_msgs::msg::Bool::SharedPtr msg)
 void InputBridgeNode::onSlamOdom(const nav_msgs::msg::Odometry::SharedPtr msg)
 {
   if (!enable_slam_align_) return;
+  // CRITICAL safety: reject NaN/Inf position components before they reach the
+  // latched transform that PX4 EKF2 will fuse for vehicle control.
+  if (!std::isfinite(msg->pose.pose.position.x) ||
+      !std::isfinite(msg->pose.pose.position.y) ||
+      !std::isfinite(msg->pose.pose.position.z))
+  {
+    RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000,
+      "onSlamOdom: rejected non-finite position");
+    return;
+  }
+  const double qw = msg->pose.pose.orientation.w;
+  const double qx = msg->pose.pose.orientation.x;
+  const double qy = msg->pose.pose.orientation.y;
+  const double qz = msg->pose.pose.orientation.z;
+  if (!std::isfinite(qw) || !std::isfinite(qx) ||
+      !std::isfinite(qy) || !std::isfinite(qz))
+  {
+    RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000,
+      "onSlamOdom: rejected non-finite quaternion");
+    return;
+  }
+  const double qnorm_sq = qw*qw + qx*qx + qy*qy + qz*qz;
+  if (qnorm_sq < 1e-6 || std::fabs(qnorm_sq - 1.0) > 0.05)
+  {
+    RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000,
+      "onSlamOdom: rejected non-unit quaternion (|q|^2=%.4f)", qnorm_sq);
+    return;
+  }
+
   std::lock_guard<std::mutex> lock(align_inputs_mutex_);
   if (!cached_inputs_.aft_mapped_seen) {
     cached_inputs_.first_aft_mapped = Eigen::Isometry3d::Identity();
@@ -384,16 +419,13 @@ void InputBridgeNode::onSlamOdom(const nav_msgs::msg::Odometry::SharedPtr msg)
       Eigen::Vector3d(msg->pose.pose.position.x,
                       msg->pose.pose.position.y,
                       msg->pose.pose.position.z);
-    cached_inputs_.first_aft_mapped.linear() =
-      Eigen::Quaterniond(msg->pose.pose.orientation.w,
-                         msg->pose.pose.orientation.x,
-                         msg->pose.pose.orientation.y,
-                         msg->pose.pose.orientation.z).toRotationMatrix();
+    Eigen::Quaterniond q(qw, qx, qy, qz);
+    q.normalize();
+    cached_inputs_.first_aft_mapped.linear() = q.toRotationMatrix();
   }
   cached_inputs_.aft_mapped_seen = true;
   slam_last_msg_time_ = this->get_clock()->now();
 
-  // If LATCHED, publish aligned pose immediately
   if (align_sm_->state() == nav2_input_bridge::AlignState::LATCHED) {
     publishAlignedPose(msg);
   }
@@ -413,8 +445,17 @@ void InputBridgeNode::onGpsRaw(const mavros_msgs::msg::GPSRAW::SharedPtr msg)
 void InputBridgeNode::onLocalOdomAlign(const nav_msgs::msg::Odometry::SharedPtr msg)
 {
   if (!enable_slam_align_) return;
-  std::lock_guard<std::mutex> lock(align_inputs_mutex_);
   const auto & c = msg->pose.covariance;  // 36-element row-major 6x6
+  // Validate the four covariance terms we use are finite and non-negative.
+  if (!std::isfinite(c[0]) || !std::isfinite(c[7]) ||
+      !std::isfinite(c[14]) || !std::isfinite(c[35]) ||
+      c[0] < 0.0 || c[7] < 0.0 || c[14] < 0.0 || c[35] < 0.0)
+  {
+    RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000,
+      "onLocalOdomAlign: rejected non-finite or negative covariance");
+    return;
+  }
+  std::lock_guard<std::mutex> lock(align_inputs_mutex_);
   double pos_trace = c[0] + c[7] + c[14];
   double yaw_var = c[35];
   cached_inputs_.ekf2_cov_low =
@@ -428,7 +469,6 @@ void InputBridgeNode::evaluateAlign()
   if (!enable_slam_align_ || !align_sm_) return;
 
   AlignInputs snap;
-  bool have_yaw_for_latch = false;
 
   {
     std::lock_guard<std::mutex> lock(align_inputs_mutex_);
@@ -450,7 +490,6 @@ void InputBridgeNode::evaluateAlign()
           Eigen::AngleAxisd(snap.last_compass_hdg_deg * M_PI / 180.0,
                             Eigen::Vector3d::UnitZ()).toRotationMatrix();
         snap.T_ENU_base_latch = T_ENU_base_snap;
-        have_yaw_for_latch = true;
       }
     }
   }
@@ -462,14 +501,14 @@ void InputBridgeNode::evaluateAlign()
     if (align_sm_->fatalElapsedS() >= fatal_timeout_s_) {
       // Force FATAL by repeated relatch until attempts>3
       while (align_sm_->state() != nav2_input_bridge::AlignState::FATAL) {
-        align_sm_->update(snap);
+        (void)align_sm_->update(snap);
       }
     }
   }
 
   // Drive state machine
   const AlignState prev_state = align_sm_->state();
-  align_sm_->update(snap);
+  (void)align_sm_->update(snap);
 
   // Publish state for monitoring
   if (align_sm_->state() != prev_state && align_state_pub_) {
@@ -545,14 +584,32 @@ void InputBridgeNode::onRelatchService(
 void InputBridgeNode::onCompassHdg(const std_msgs::msg::Float32::SharedPtr msg)
 {
   if (!enable_slam_align_) return;
+  if (!std::isfinite(msg->data) || msg->data < -720.0f || msg->data > 720.0f)
+  {
+    RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000,
+      "onCompassHdg: rejected non-finite or out-of-range value %.2f", msg->data);
+    return;
+  }
   std::lock_guard<std::mutex> lock(align_inputs_mutex_);
   cached_inputs_.last_compass_hdg_deg = msg->data;
   cached_inputs_.mavros_heading_valid = true;
 }
 
-void InputBridgeNode::onGpOrigin(const geographic_msgs::msg::GeoPointStamped::SharedPtr /*msg*/)
+void InputBridgeNode::onGpOrigin(const geographic_msgs::msg::GeoPointStamped::SharedPtr msg)
 {
   if (!enable_slam_align_) return;
+  const double lat = msg->position.latitude;
+  const double lon = msg->position.longitude;
+  const double alt = msg->position.altitude;
+  if (lat < -90.0 || lat > 90.0 ||
+      lon < -180.0 || lon > 180.0 ||
+      !std::isfinite(alt))
+  {
+    RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000,
+      "onGpOrigin: rejected out-of-range or non-finite (lat=%.4f lon=%.4f alt=%.2f)",
+      lat, lon, alt);
+    return;
+  }
   std::lock_guard<std::mutex> lock(align_inputs_mutex_);
   cached_inputs_.gp_origin_verified = true;
 }
