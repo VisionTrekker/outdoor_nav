@@ -2,11 +2,13 @@
   ros__parameters:
     plugin_allowlist:
       # 仅加载必要插件（白名单模式），未列出的插件全部禁用
-      - sys_status        # PX4 心跳、状态监控
+      # 插件名以 mavros_plugins.xml 为权威源（xml class name = 注册 key）
+      - sys_status        # PX4 心跳、状态监控 → /mavros/state（DC-7）
       - sys_time          # 时间同步
-      - command           # 解锁/上锁、模式切换
+      - command           # 解锁/上锁、模式切换（auto_set_gp_origin 用）
       - param             # 读写 PX4 参数
-      - local_position    # /mavros/local_position/odom (controller_server, input_bridge 依赖)
-      - global_position   # /mavros/global_position/gp_origin (auto_set_gp_origin 依赖)
-      - vision_pose       # /mavros/vision_pose/pose (vio_bridge 向 PX4 注入 VIO 位姿)
-      - waypoint          # 航点任务管理
+      - local_position    # /mavros/local_position/odom（DC-6，含 6x6 covariance）
+      - global_position   # /mavros/global_position/{global,compass_hdg,gp_origin}（DC-2/3/4）
+      - vision_pose       # /mavros/vision_pose/pose（align_node 输出 → PX4 EKF2）
+      - gps_status        # /mavros/gpsstatus/gps1/raw（DC-5 fix_type/sat/h_acc，spec §2.3 DC-5）
+      - waypoint          # 航点任务管理（保留，无人用也加载）
