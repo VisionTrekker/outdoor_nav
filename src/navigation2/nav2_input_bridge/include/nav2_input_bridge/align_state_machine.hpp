@@ -50,6 +50,8 @@ struct AlignInputs {
   Eigen::Isometry3d first_aft_mapped{Eigen::Isometry3d::Identity()};
   // 由 mavros global+compass_hdg 算出的 T_ENU_base 锚点
   Eigen::Isometry3d T_ENU_base_latch{Eigen::Isometry3d::Identity()};
+  // 最新一帧 SLAM 位姿（spec §1 A6 0.2m 启动期位移诊断用，state machine 不读）
+  Eigen::Vector3d latest_slam_pos{Eigen::Vector3d::Zero()};
 
   // 构造 T_ENU_base_latch 所需的最新原始值（evaluateAlign() 读取后调用 llaToEnu）
   double last_lat = 0.0; // GPS 纬度（度）

@@ -427,6 +427,10 @@ void InputBridgeNode::onSlamOdom(const nav_msgs::msg::Odometry::SharedPtr msg) {
     cached_inputs_.first_aft_mapped.linear() = q.toRotationMatrix();
   }
   cached_inputs_.aft_mapped_seen = true;
+  // 跟踪最新 SLAM 位姿，供 evaluateAlign 在 LATCH 时算"首帧到锁存"位移诊断
+  // （spec §1 A6 假设启动后车体移动 < 0.2m；不阻塞，仅监控）
+  cached_inputs_.latest_slam_pos =
+    Eigen::Vector3d(msg->pose.pose.position.x, msg->pose.pose.position.y, msg->pose.pose.position.z);
   slam_last_msg_time_ = this->get_clock()->now();
 
   // 修复时间戳差：
@@ -450,15 +454,31 @@ void InputBridgeNode::onSlamOdom(const nav_msgs::msg::Odometry::SharedPtr msg) {
 
 // /mavros/gpsstatus/gps1/raw 回调：更新 GPS 质量门（DC-5）。
 //   字段：fix_type（默认 ≥6=RTK_FIXED）、satellites_visible（默认 ≥12）、
-//         h_acc（默认 ≤500 mm）。
+//         h_acc（首选：≤500 mm）/ eph（备选：h_acc 不可用时回退）。
 //   注意：用 satellites_visible 而非 status.satellites_used（前者更可靠）。
+//   备选逻辑：MAVLink `GPS_RAW_INT.eph` 单位是 HDOP × 100，所以 eph ≤ 150 等价
+//   HDOP ≤ 1.5（与 spec §1 A2 原始"HDOP ≤ 1.5"意图一致；旧 spec 误写 "eph ≤ 15" 已修正）。
+//   h_acc == UINT32_MAX 是 MAVLink 标准"字段不可用"标记。
 void InputBridgeNode::onGpsRaw(const mavros_msgs::msg::GPSRAW::SharedPtr msg) {
   if (!enable_slam_align_)
     return;
   std::lock_guard<std::mutex> lock(align_inputs_mutex_);
-  cached_inputs_.gps_quality_ok = (msg->fix_type >= static_cast<uint8_t>(gps_fix_type_min_)) &&
-                                  (msg->satellites_visible >= static_cast<uint8_t>(gps_sat_min_)) &&
-                                  (msg->h_acc <= static_cast<uint32_t>(gps_h_acc_max_mm_));
+  const bool fix_ok = (msg->fix_type >= static_cast<uint8_t>(gps_fix_type_min_)) &&
+                      (msg->satellites_visible >= static_cast<uint8_t>(gps_sat_min_));
+  bool accuracy_ok = false;
+  constexpr uint32_t H_ACC_UNKNOWN = std::numeric_limits<uint32_t>::max();
+  if (msg->h_acc != H_ACC_UNKNOWN) {
+    // 首选：h_acc 水平精度 (mm)
+    accuracy_ok = (msg->h_acc <= static_cast<uint32_t>(gps_h_acc_max_mm_));
+  } else {
+    // 备选：eph (HDOP × 100)；eph ≤ 150 ≡ HDOP ≤ 1.5
+    accuracy_ok = (msg->eph <= 150);
+    RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 30000,
+                         "onGpsRaw: h_acc unavailable (UINT32_MAX), falling back to eph=%u "
+                         "(HDOP ≈ %.2f, gate %s)",
+                         msg->eph, msg->eph / 100.0, accuracy_ok ? "OK" : "FAIL");
+  }
+  cached_inputs_.gps_quality_ok = fix_ok && accuracy_ok;
 }
 
 // /mavros/local_position/odom 回调：更新 EKF2 协方差
@@ -574,13 +594,26 @@ void InputBridgeNode::evaluateAlign() {
 
   // LATCHED 监控日志（限速 60s 一次）
   if (align_sm_->state() == nav2_input_bridge::AlignState::LATCHED) {
+    // spec §1 A6 启动期位移诊断：首帧到锁存期间车体移动 < 0.2m
+    //   这里算 (latest_slam_pos - first_aft_mapped.translation()) 的欧氏距离。
+    //   > 0.2m 时 WARN（不阻塞），提示操作员车在 latch 期间动了。
+    const Eigen::Vector3d disp_vec =
+      snap.latest_slam_pos - snap.first_aft_mapped.translation();
+    const double disp_m = disp_vec.norm();
+    if (disp_m > 0.2) {
+      RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 60000,
+                           "ALIGN_DIAGNOSTIC: displacement from first SLAM frame to latch = "
+                           "%.3f m (> 0.2m, spec §1 A6 assumption violated — car may have moved "
+                           "between first SLAM frame and latch)",
+                           disp_m);
+    }
     RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 60000,
                          "LATCH COMPLETE: yaw_offset=%.4f rad (%.2f deg), off_yaw=%.4f rad, "
-                         "T_ENU_odom.t=[%.3f, %.3f, %.3f]",
+                         "T_ENU_odom.t=[%.3f, %.3f, %.3f], first_to_latch_disp=%.3f m",
                          align_sm_->lastYawOffset(), align_sm_->lastYawOffset() * 180.0 / M_PI,
                          align_sm_->lastOffYaw(), align_sm_->latchedOffset().translation().x(),
                          align_sm_->latchedOffset().translation().y(),
-                         align_sm_->latchedOffset().translation().z());
+                         align_sm_->latchedOffset().translation().z(), disp_m);
   }
 }
 
@@ -654,7 +687,11 @@ void InputBridgeNode::onCompassHdg(const std_msgs::msg::Float32::SharedPtr msg) 
 }
 
 // /mavros/global_position/gp_origin 回调：DC-4 验证 PX4 已设置好 ENU 原点。
-//   验证规则：lat ∈ [-90, 90]、lon ∈ [-180, 180]、alt 有限。
+//   验证规则（spec §2.4 条件 4 文字要求 "== yaml"）：
+//     1) lat ∈ [-90, 90]、lon ∈ [-180, 180]、alt 有限
+//     2) 与配置的 reference_lat/lon/alt 偏差 < 1e-6 度（≈0.11m，等同
+//        auto_set_gp_origin.py:91 的 verify_tolerance_deg=1e-6）
+//        与 alt 偏差 < 1m（垂直方向 PX4/WGS84 投影误差较大，容差放宽）
 //   注意：本回调不更新 origin_lat_/lon_/alt_——ENU 原点只能由 reference_*
 //         参数或 set_gp_origin 服务设置；本回调只确认 PX4 端已就绪
 void InputBridgeNode::onGpOrigin(const geographic_msgs::msg::GeoPointStamped::SharedPtr msg) {
@@ -668,6 +705,37 @@ void InputBridgeNode::onGpOrigin(const geographic_msgs::msg::GeoPointStamped::Sh
       get_logger(), *get_clock(), 5000,
       "onGpOrigin: rejected out-of-range or non-finite (lat=%.4f lon=%.4f alt=%.2f)", lat, lon,
       alt);
+    return;
+  }
+  // 严格检查：PX4 端 origin 必须与配置的 reference_* 匹配（否则 PX4 set_gp_origin
+  //   服务未生效，仍在用默认 0,0,0，会让 8 条件误判通过）
+  constexpr double TOLERANCE_DEG = 1e-6;   // 约 0.11m at equator
+  constexpr double TOLERANCE_ALT_M = 1.0;  // 垂直方向容差放宽（PX4/WGS84 投影噪声）
+  bool verified = false;
+  {
+    std::lock_guard<std::mutex> olock(origin_mutex_);
+    if (origin_valid_ && std::fabs(lat - origin_lat_) < TOLERANCE_DEG &&
+        std::fabs(lon - origin_lon_) < TOLERANCE_DEG &&
+        std::fabs(alt - origin_alt_) < TOLERANCE_ALT_M) {
+      verified = true;
+    }
+  }
+  if (!verified) {
+    double cfg_lat = 0.0, cfg_lon = 0.0, cfg_alt = 0.0;
+    bool cfg_valid = false;
+    {
+      std::lock_guard<std::mutex> olock(origin_mutex_);
+      cfg_valid = origin_valid_;
+      cfg_lat = origin_lat_;
+      cfg_lon = origin_lon_;
+      cfg_alt = origin_alt_;
+    }
+    RCLCPP_WARN_THROTTLE(
+      get_logger(), *get_clock(), 5000,
+      "onGpOrigin: PX4 origin (lat=%.6f lon=%.6f alt=%.2f) does not match configured reference "
+      "(lat=%.6f lon=%.6f alt=%.2f, valid=%s), gate stays false (set_gp_origin service likely "
+      "not effective)",
+      lat, lon, alt, cfg_lat, cfg_lon, cfg_alt, cfg_valid ? "true" : "false");
     return;
   }
   std::lock_guard<std::mutex> lock(align_inputs_mutex_);
