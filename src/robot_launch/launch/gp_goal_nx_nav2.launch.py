@@ -65,6 +65,14 @@ def generate_launch_description():
         condition=IfCondition(use_mid360),
     )
 
+    bridge_node = Node(
+        package="livox_pointcloud2_bridge",
+        executable="livox_pointcloud2_bridge_node",
+        name="livox_pointcloud2_bridge",
+        output="screen",
+        condition=IfCondition(use_mid360),
+    )
+
     static_tf_base_lidar = Node(
         package="tf2_ros",
         executable="static_transform_publisher",
@@ -141,6 +149,7 @@ def generate_launch_description():
             declare_use_mid360,
             declare_enable_slam_align,
             mid360_driver,
+            bridge_node,
             static_tf_base_lidar,
             static_tf_map_odom,
             input_bridge_node,

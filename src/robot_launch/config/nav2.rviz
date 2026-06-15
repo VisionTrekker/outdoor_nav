@@ -164,7 +164,7 @@ Visualization Manager:
         Filter size: 10
         History Policy: Keep Last
         Reliability Policy: Reliable
-        Value: /livox/lidar
+        Value: /livox/lidar_pc2
       Use Fixed Frame: true
       Use rainbow: true
       Value: false
