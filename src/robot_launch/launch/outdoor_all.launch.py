@@ -46,12 +46,6 @@ def generate_launch_description():
     fcu_url = LaunchConfiguration("fcu_url")
     use_auto_origin = LaunchConfiguration("use_auto_origin")
 
-    car_driver_launch = IncludeLaunchDescription(
-        PythonLaunchDescriptionSource(
-            os.path.join(get_package_share_directory("ros2can"), "launch", "car_driver.launch.py")
-        )
-    )
-
     mavros_pluginlists_yaml = os.path.join(robot_launch_share, "config", "mavros_pluginlists.yaml")
 
     mavros_launch = IncludeLaunchDescription(
@@ -91,7 +85,6 @@ def generate_launch_description():
         [
             declare_use_auto_origin,
             declare_fcu_url,
-            car_driver_launch,
             mavros_launch,
             nav2_launch,
             auto_set_origin_node,
