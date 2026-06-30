@@ -9,4 +9,5 @@
       - local_position    # /mavros/local_position/odom (controller_server, input_bridge 依赖)
       - global_position   # /mavros/global_position/gp_origin (auto_set_gp_origin 依赖)
       - vision_pose       # /mavros/vision_pose/pose (vio_bridge 向 PX4 注入 VIO 位姿)
+      - gps_status
       - waypoint          # 航点任务管理
