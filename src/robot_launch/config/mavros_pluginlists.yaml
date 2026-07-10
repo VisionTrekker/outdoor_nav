@@ -7,6 +7,7 @@
       - command           # 解锁/上锁、模式切换
       - param             # 读写 PX4 参数
       - local_position    # /mavros/local_position/odom (controller_server, input_bridge 依赖)
+      - imu               # /mavros/imu/data；local_position 插件需要它来填 pose.orientation，否则恒为 (0,0,0,1)
       - global_position   # /mavros/global_position/gp_origin (auto_set_gp_origin 依赖)
       - vision_pose       # /mavros/vision_pose/pose (vio_bridge 向 PX4 注入 VIO 位姿)
       - gps_status
