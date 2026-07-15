@@ -7,7 +7,7 @@ from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
 from launch.conditions import IfCondition
-from launch.launch_description_sources import AnyLaunchDescriptionSource, PythonLaunchDescriptionSource
+from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
@@ -39,7 +39,7 @@ def generate_launch_description():
     )
     declare_fcu_url = DeclareLaunchArgument(
         "fcu_url",
-        default_value="/dev/ttyACM0:115200",
+        default_value="/dev/ttyACM0:230400",
         description="MAVROS FCU URL.",
     )
     declare_use_rviz = DeclareLaunchArgument(
@@ -65,11 +65,16 @@ def generate_launch_description():
         )
     )
 
+    mavros_pluginlists_yaml = os.path.join(robot_launch_share, "config", "mavros_pluginlists.yaml")
+
     mavros_launch = IncludeLaunchDescription(
-        AnyLaunchDescriptionSource(
-            os.path.join(get_package_share_directory("mavros"), "launch", "px4.launch")
+        PythonLaunchDescriptionSource(
+            os.path.join(robot_launch_share, "launch", "mavros_px4.launch.py")
         ),
-        launch_arguments={"fcu_url": fcu_url}.items(),
+        launch_arguments={
+            "fcu_url": fcu_url,
+            "pluginlists_yaml": mavros_pluginlists_yaml,
+        }.items(),
     )
 
     nav2_launch = IncludeLaunchDescription(
