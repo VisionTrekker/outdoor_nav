@@ -7,6 +7,7 @@
       - sys_time          # 时间同步
       - command           # 解锁/上锁、模式切换（auto_set_gp_origin 用）
       - param             # 读写 PX4 参数
+      - imu               # /mavros/imu/data；local_position 插件需要它来填 pose.orientation，否则恒为 (0,0,0,1)
       - local_position    # /mavros/local_position/odom（DC-6，含 6x6 covariance）
       - global_position   # /mavros/global_position/{global,compass_hdg,gp_origin}（DC-2/3/4）
       - vision_pose       # /mavros/vision_pose/pose（align_node 输出 → PX4 EKF2）
