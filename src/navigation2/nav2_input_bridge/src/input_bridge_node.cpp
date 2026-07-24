@@ -112,11 +112,7 @@ InputBridgeNode::InputBridgeNode(const rclcpp::NodeOptions &options)
 
     slam_odom_sub_ = this->create_subscription<nav_msgs::msg::Odometry>(
       slam_odom_topic_, 10, std::bind(&InputBridgeNode::onSlamOdom, this, std::placeholders::_1));
-    gps_raw_sub_ = this->create_subscription<mavros_msgs::msg::GPSRAW>(
-      gps_raw_topic_, 10, std::bind(&InputBridgeNode::onGpsRaw, this, std::placeholders::_1));
-    local_odom_sub_ = this->create_subscription<nav_msgs::msg::Odometry>(
-      "/mavros/local_position/odom", 10,
-      std::bind(&InputBridgeNode::onLocalOdomAlign, this, std::placeholders::_1));
+
     vision_pose_pub_ =
       this->create_publisher<geometry_msgs::msg::PoseStamped>(slam_vision_pose_topic_, 10);
     relatch_srv_ = this->create_service<std_srvs::srv::Trigger>(
@@ -124,13 +120,24 @@ InputBridgeNode::InputBridgeNode(const rclcpp::NodeOptions &options)
                                           std::placeholders::_1, std::placeholders::_2));
     align_state_pub_ = this->create_publisher<std_msgs::msg::String>("~/state", 10);
 
+    // QoS 必须 BEST_EFFORT：mavros 全局发布都使用 BEST_EFFORT reliability（见
+    // /opt/ros/humble/share/mavros/launch/px4_config.yaml 的 qos 配置）。
+    // 所以下面几个 mavros_* 订阅也需使用 BEST_EFFORT
+    rclcpp::QoS mavros_qos(10);
+    mavros_qos.best_effort();
+
     compass_hdg_sub_ = this->create_subscription<std_msgs::msg::Float64>(
-      "/mavros/global_position/compass_hdg", 10,
+      "/mavros/global_position/compass_hdg", mavros_qos,
       std::bind(&InputBridgeNode::onCompassHdg, this, std::placeholders::_1));
     gp_origin_sub_ = this->create_subscription<geographic_msgs::msg::GeoPointStamped>(
-      "/mavros/global_position/gp_origin", 10,
+      "/mavros/global_position/gp_origin", mavros_qos,
       std::bind(&InputBridgeNode::onGpOrigin, this, std::placeholders::_1));
-
+    local_odom_sub_ = this->create_subscription<nav_msgs::msg::Odometry>(
+      "/mavros/local_position/odom", mavros_qos,
+      std::bind(&InputBridgeNode::onLocalOdomAlign, this, std::placeholders::_1));
+    gps_raw_sub_ = this->create_subscription<mavros_msgs::msg::GPSRAW>(
+      gps_raw_topic_, mavros_qos,
+      std::bind(&InputBridgeNode::onGpsRaw, this, std::placeholders::_1));
     align_eval_timer_ = this->create_wall_timer(std::chrono::milliseconds(100),
                                                 std::bind(&InputBridgeNode::evaluateAlign, this));
   }
