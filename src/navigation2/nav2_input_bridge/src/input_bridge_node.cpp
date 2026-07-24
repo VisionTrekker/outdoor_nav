@@ -124,7 +124,7 @@ InputBridgeNode::InputBridgeNode(const rclcpp::NodeOptions &options)
                                           std::placeholders::_1, std::placeholders::_2));
     align_state_pub_ = this->create_publisher<std_msgs::msg::String>("~/state", 10);
 
-    compass_hdg_sub_ = this->create_subscription<std_msgs::msg::Float32>(
+    compass_hdg_sub_ = this->create_subscription<std_msgs::msg::Float64>(
       "/mavros/global_position/compass_hdg", 10,
       std::bind(&InputBridgeNode::onCompassHdg, this, std::placeholders::_1));
     gp_origin_sub_ = this->create_subscription<geographic_msgs::msg::GeoPointStamped>(
@@ -673,16 +673,16 @@ void InputBridgeNode::onRelatchService(const std::shared_ptr<std_srvs::srv::Trig
 // /mavros/global_position/compass_hdg 回调：缓存磁航向（度 [0, 360)）
 //   拒绝 NaN/Inf 或 |val| > 720（720°=2 圈，远超物理合理值）
 //   ⚠️ 注意：消息值单位是"度"，evaluateAlign 中构造旋转矩阵前必须 *M_PI/180
-void InputBridgeNode::onCompassHdg(const std_msgs::msg::Float32::SharedPtr msg) {
+void InputBridgeNode::onCompassHdg(const std_msgs::msg::Float64::SharedPtr msg) {
   if (!enable_slam_align_)
     return;
-  if (!std::isfinite(msg->data) || msg->data < -720.0f || msg->data > 720.0f) {
+  if (!std::isfinite(msg->data) || msg->data < -720.0 || msg->data > 720.0) {
     RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000,
                          "onCompassHdg: rejected non-finite or out-of-range value %.2f", msg->data);
     return;
   }
   std::lock_guard<std::mutex> lock(align_inputs_mutex_);
-  cached_inputs_.last_compass_hdg_deg = msg->data;
+  cached_inputs_.last_compass_hdg_deg = static_cast<float>(msg->data);
   cached_inputs_.mavros_heading_valid = true;
 }
 

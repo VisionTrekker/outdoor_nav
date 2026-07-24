@@ -33,7 +33,7 @@
 #include "rclcpp_action/rclcpp_action.hpp"
 #include "sensor_msgs/msg/nav_sat_fix.hpp"
 #include "std_msgs/msg/bool.hpp"
-#include "std_msgs/msg/float32.hpp"
+#include "std_msgs/msg/float64.hpp"
 #include "std_msgs/msg/string.hpp"
 #include "std_srvs/srv/trigger.hpp"
 #include "tf2_ros/transform_broadcaster.h"
@@ -73,8 +73,8 @@ private:
   // onRelatchService：~/input_bridge/relatch 服务处理函数
   void onRelatchService(const std::shared_ptr<std_srvs::srv::Trigger::Request> request,
                         std::shared_ptr<std_srvs::srv::Trigger::Response> response);
-  // onCompassHdg：/mavros/global_position/compass_hdg 单位为度 [0, 360)
-  void onCompassHdg(const std_msgs::msg::Float32::SharedPtr msg);
+  // onCompassHdg：/mavros/global_position/compass_hdg 当前车朝向，单位为度 [0, 360)
+  void onCompassHdg(const std_msgs::msg::Float64::SharedPtr msg);
   // onGpOrigin：/mavros/global_position/gp_origin ENU 原点
   void onGpOrigin(const geographic_msgs::msg::GeoPointStamped::SharedPtr msg);
 
@@ -91,7 +91,7 @@ private:
   rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr vision_pose_pub_; // → EKF2
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr relatch_srv_;      // ~/input_bridge/relatch
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr align_state_pub_; // ~/state 状态广播
-  rclcpp::Subscription<std_msgs::msg::Float32>::SharedPtr compass_hdg_sub_;
+  rclcpp::Subscription<std_msgs::msg::Float64>::SharedPtr compass_hdg_sub_;
   rclcpp::Subscription<geographic_msgs::msg::GeoPointStamped>::SharedPtr gp_origin_sub_;
 
   // 缓存：各回调写入，evaluateAlign 读取并拷贝快照
