@@ -129,6 +129,11 @@ InputBridgeNode::InputBridgeNode(const rclcpp::NodeOptions &options)
     compass_hdg_sub_ = this->create_subscription<std_msgs::msg::Float64>(
       "/mavros/global_position/compass_hdg", mavros_qos,
       std::bind(&InputBridgeNode::onCompassHdg, this, std::placeholders::_1));
+    // 永久 GPS 锚点:订阅 PX4 自己报告的 /mavros/global_position/global，
+    // GPS fix 就绪后 align 状态机的 mavros_global_valid gate 就可以通过
+    mavros_global_sub_ = this->create_subscription<sensor_msgs::msg::NavSatFix>(
+      "/mavros/global_position/global", mavros_qos,
+      std::bind(&InputBridgeNode::onMavrosGlobalFix, this, std::placeholders::_1));
     gp_origin_sub_ = this->create_subscription<geographic_msgs::msg::GeoPointStamped>(
       "/mavros/global_position/gp_origin", mavros_qos,
       std::bind(&InputBridgeNode::onGpOrigin, this, std::placeholders::_1));
@@ -321,41 +326,15 @@ void InputBridgeNode::processGoalFix(const sensor_msgs::msg::NavSatFix::SharedPt
               east, north, up);
 }
 
-// /gp_goal 回调：除了发布目标点，还顺带给 align 状态机缓存 GPS 锚点。
-//   注意：source="manual"，与 UAV 链路下发的 target_gps 区分日志。
+// /gp_goal 回调：仅做目标点 GPS→ENU→/goal_pose 发布。
+//   注意：align 路径的 GPS 锚点统一由 onMavrosGlobalFix() 订阅 /mavros/global_position/global 提供
 void InputBridgeNode::onGoalFix(const sensor_msgs::msg::NavSatFix::SharedPtr msg) {
   processGoalFix(msg, "manual");
-  if (!enable_slam_align_)
-    return;
-  // 仅缓存"可用 fix + 坐标有限"的消息，避免把 NO_FIX 或 NaN 灌进状态机
-  if (msg->status.status == sensor_msgs::msg::NavSatStatus::STATUS_NO_FIX ||
-      !std::isfinite(msg->latitude) || !std::isfinite(msg->longitude) ||
-      !std::isfinite(msg->altitude)) {
-    return;
-  }
-  std::lock_guard<std::mutex> lock(align_inputs_mutex_);
-  cached_inputs_.last_lat = msg->latitude;
-  cached_inputs_.last_lon = msg->longitude;
-  cached_inputs_.last_alt = msg->altitude;
-  cached_inputs_.mavros_global_valid = true;
 }
 
 // /uav/target_gps 回调：与 onGoalFix 相同的处理逻辑（仅 source 不同）。
-//   注：两个 topic 写入 cached_inputs_ 是"后写覆盖"，evaluateAlign 取最新值。
 void InputBridgeNode::onUavGoalFix(const sensor_msgs::msg::NavSatFix::SharedPtr msg) {
   processGoalFix(msg, "uav");
-  if (!enable_slam_align_)
-    return;
-  if (msg->status.status == sensor_msgs::msg::NavSatStatus::STATUS_NO_FIX ||
-      !std::isfinite(msg->latitude) || !std::isfinite(msg->longitude) ||
-      !std::isfinite(msg->altitude)) {
-    return;
-  }
-  std::lock_guard<std::mutex> lock(align_inputs_mutex_);
-  cached_inputs_.last_lat = msg->latitude;
-  cached_inputs_.last_lon = msg->longitude;
-  cached_inputs_.last_alt = msg->altitude;
-  cached_inputs_.mavros_global_valid = true;
 }
 
 // 发送停止信号：先通知 straight_planner 不再发新目标，再尝试取消 FollowPath action。
@@ -691,6 +670,24 @@ void InputBridgeNode::onCompassHdg(const std_msgs::msg::Float64::SharedPtr msg) 
   std::lock_guard<std::mutex> lock(align_inputs_mutex_);
   cached_inputs_.last_compass_hdg_deg = static_cast<float>(msg->data);
   cached_inputs_.mavros_heading_valid = true;
+}
+
+// /mavros/global_position/global 回调（PX4 自己报的 GPS 全局位置,NavSatFix）：
+//   - 一旦 PX4 GPS 有 valid fix,这里每帧都更新缓存,mavros_global_valid gate 会永久 true
+//   - 保留对 NO_FIX 和 NaN 的拒绝
+void InputBridgeNode::onMavrosGlobalFix(const sensor_msgs::msg::NavSatFix::SharedPtr msg) {
+  if (!enable_slam_align_)
+    return;
+  if (msg->status.status == sensor_msgs::msg::NavSatStatus::STATUS_NO_FIX ||
+      !std::isfinite(msg->latitude) || !std::isfinite(msg->longitude) ||
+      !std::isfinite(msg->altitude)) {
+    return;
+  }
+  std::lock_guard<std::mutex> lock(align_inputs_mutex_);
+  cached_inputs_.last_lat = msg->latitude;
+  cached_inputs_.last_lon = msg->longitude;
+  cached_inputs_.last_alt = msg->altitude;
+  cached_inputs_.mavros_global_valid = true;
 }
 
 // /mavros/global_position/gp_origin 回调：DC-4 验证 PX4 已设置好 ENU 原点。

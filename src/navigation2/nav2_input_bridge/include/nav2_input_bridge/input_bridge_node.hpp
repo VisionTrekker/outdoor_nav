@@ -75,6 +75,8 @@ private:
                         std::shared_ptr<std_srvs::srv::Trigger::Response> response);
   // onCompassHdg：/mavros/global_position/compass_hdg 当前车朝向，单位为度 [0, 360)
   void onCompassHdg(const std_msgs::msg::Float64::SharedPtr msg);
+  // onMavrosGlobalFix：订阅 /mavros/global_position/global 当前车 PX4 GPS 全局位置
+  void onMavrosGlobalFix(const sensor_msgs::msg::NavSatFix::SharedPtr msg);
   // onGpOrigin：/mavros/global_position/gp_origin ENU 原点
   void onGpOrigin(const geographic_msgs::msg::GeoPointStamped::SharedPtr msg);
 
@@ -93,6 +95,8 @@ private:
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr align_state_pub_; // ~/state 状态广播
   rclcpp::Subscription<std_msgs::msg::Float64>::SharedPtr compass_hdg_sub_;
   rclcpp::Subscription<geographic_msgs::msg::GeoPointStamped>::SharedPtr gp_origin_sub_;
+  // /mavros/global_position/global 只要 PX4 GPS 有 fix 就给 mavros_global_valid 喂 true
+  rclcpp::Subscription<sensor_msgs::msg::NavSatFix>::SharedPtr mavros_global_sub_;
 
   // 缓存：各回调写入，evaluateAlign 读取并拷贝快照
   AlignInputs cached_inputs_;
